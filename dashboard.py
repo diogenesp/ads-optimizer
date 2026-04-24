@@ -232,7 +232,38 @@ def generate_claude_analysis(shopify_cur, shopify_prev, gads_cur, gads_prev):
     return full
 
 
+def check_auth():
+    if st.session_state.get("authenticated"):
+        return True
+
+    st.markdown("""
+    <div style="max-width:380px; margin:80px auto 0; text-align:center;">
+        <h2 style="color:#cdd6f4; margin-bottom:4px;">📊 Smart GR</h2>
+        <p style="color:#a6adc8; margin-bottom:28px;">Performance Dashboard</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col = st.columns([1, 2, 1])[1]
+    with col:
+        with st.form("login_form"):
+            password = st.text_input("Senha", type="password", placeholder="Digite a senha de acesso")
+            submitted = st.form_submit_button("Entrar", use_container_width=True)
+
+        if submitted:
+            expected = st.secrets.get("PASSWORD", "")
+            if password == expected:
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("Senha incorreta.")
+
+    return False
+
+
 def main():
+    if not check_auth():
+        st.stop()
+
     # --- Session state ---
     if "cache_key" not in st.session_state:
         st.session_state.cache_key = datetime.now().isoformat()
