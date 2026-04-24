@@ -341,32 +341,28 @@ def main():
         })
 
     df_camps = pd.DataFrame(camp_rows)
-    st.dataframe(
-        df_camps.style.format({
-            "Gasto (R$)": "R$ {:,.2f}",
-            "Receita (R$)": "R$ {:,.2f}",
-            "ROAS": "{:.2f}x",
-            "Var. ROAS": lambda v: f"+{v:.1f}%" if v and v >= 0 else (f"{v:.1f}%" if v else "—"),
-            "Conversões": "{:.1f}",
-            "CPA (R$)": lambda v: f"R$ {v:,.2f}" if v else "—",
-            "CTR (%)": "{:.2f}%",
-        }).background_gradient(subset=["ROAS"], cmap="RdYlGn"),
-        use_container_width=True,
-        hide_index=True,
+    df_camps["Gasto (R$)"] = df_camps["Gasto (R$)"].apply(lambda v: f"R$ {v:,.2f}")
+    df_camps["Receita (R$)"] = df_camps["Receita (R$)"].apply(lambda v: f"R$ {v:,.2f}")
+    df_camps["ROAS"] = df_camps["ROAS"].apply(lambda v: f"{v:.2f}x")
+    df_camps["Var. ROAS"] = df_camps["Var. ROAS"].apply(
+        lambda v: f"+{v:.1f}%" if v and v >= 0 else (f"{v:.1f}%" if v else "—")
     )
+    df_camps["Conversões"] = df_camps["Conversões"].apply(lambda v: f"{v:.1f}")
+    df_camps["CPA (R$)"] = df_camps["CPA (R$)"].apply(
+        lambda v: f"R$ {v:,.2f}" if v else "—"
+    )
+    df_camps["CTR (%)"] = df_camps["CTR (%)"].apply(lambda v: f"{v:.2f}%")
+    st.dataframe(df_camps, use_container_width=True, hide_index=True)
 
     # --- Top 20 produtos ---
     st.markdown('<div class="section-title">Top 20 Produtos — Google Ads (Período Atual)</div>', unsafe_allow_html=True)
     df_prod = products_dataframe(shopify_cur, shopify_prev)
-    st.dataframe(
-        df_prod.style.format({
-            "Receita": "R$ {:,.2f}",
-            "Ticket Médio": "R$ {:,.2f}",
-            "Var. Qtd": lambda v: f"+{v:.1f}%" if v and v >= 0 else (f"{v:.1f}%" if v is not None else "—"),
-        }).background_gradient(subset=["Var. Qtd"], cmap="RdYlGn"),
-        use_container_width=True,
-        hide_index=True,
+    df_prod["Receita"] = df_prod["Receita"].apply(lambda v: f"R$ {v:,.2f}")
+    df_prod["Ticket Médio"] = df_prod["Ticket Médio"].apply(lambda v: f"R$ {v:,.2f}")
+    df_prod["Var. Qtd"] = df_prod["Var. Qtd"].apply(
+        lambda v: f"+{v:.1f}%" if v is not None and v >= 0 else (f"{v:.1f}%" if v is not None else "—")
     )
+    st.dataframe(df_prod, use_container_width=True, hide_index=True)
 
     # --- Análise Claude ---
     st.markdown('<div class="section-title">Análise e Recomendações — Claude AI</div>', unsafe_allow_html=True)
