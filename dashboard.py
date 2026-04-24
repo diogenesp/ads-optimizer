@@ -83,6 +83,17 @@ st.markdown("""
         background-color: #b4befe;
         color: #1e1e2e;
     }
+    .big-section {
+        font-size: 18px;
+        font-weight: 700;
+        color: #cdd6f4;
+        margin: 40px 0 4px 0;
+        padding: 12px 20px;
+        background: #181825;
+        border-left: 5px solid #89b4fa;
+        border-radius: 0 8px 8px 0;
+    }
+    .big-section-shopify { border-left-color: #a6e3a1; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -294,6 +305,96 @@ def generate_claude_analysis(shopify_cur, shopify_prev, gads_cur, gads_prev):
     return full, now_str
 
 
+def render_channel_table(channels_cur, channels_prev):
+    if not channels_cur:
+        st.info("Nenhum dado de canal disponível para o período.")
+        return
+    prev_map = {c["canal"]: c for c in (channels_prev or [])}
+    rows = []
+    for ch in channels_cur:
+        prev = prev_map.get(ch["canal"], {})
+        var = pct(ch["orders"], prev.get("orders")) if prev else None
+        rows.append({
+            "Canal": ch["canal"],
+            "Tipo": ch["tipo"],
+            "Pedidos": ch["orders"],
+            "Vendas (R$)": ch["revenue"],
+            "AOV": ch["aov"],
+            "% das Vendas": ch["pct_revenue"],
+            "Novos Clientes": ch["new_customers"],
+            "Recorrentes": ch["returning_customers"],
+            "_var": var,
+        })
+    df = pd.DataFrame(rows)
+    df["Vendas (R$)"] = df["Vendas (R$)"].apply(lambda v: f"R$ {v:,.2f}")
+    df["AOV"] = df["AOV"].apply(lambda v: f"R$ {v:,.2f}")
+    df["% das Vendas"] = df["% das Vendas"].apply(lambda v: f"{v:.1f}%")
+    df["Var. Pedidos"] = df["_var"].apply(
+        lambda v: f"+{v:.1f}%" if v is not None and v >= 0 else (f"{v:.1f}%" if v is not None else "—")
+    )
+    df.drop(columns=["_var"], inplace=True)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+def render_geo_tables(shopify_cur, shopify_prev):
+    states_cur = shopify_cur.get("geo_states", [])
+    states_prev = {s["state_code"]: s for s in shopify_prev.get("geo_states", [])}
+    cities_cur = shopify_cur.get("geo_cities", [])
+    cities_prev = {(c["city"], c["state_code"]): c for c in shopify_prev.get("geo_cities", [])}
+
+    st.markdown('<div class="section-title">Top 10 Estados — Pedidos Google Ads</div>', unsafe_allow_html=True)
+    if states_cur:
+        rows = []
+        for s in states_cur:
+            prev = states_prev.get(s["state_code"], {})
+            rows.append({
+                "Estado": s["state"],
+                "UF": s["state_code"],
+                "Pedidos": s["orders"],
+                "Receita Google Ads": s["revenue"],
+                "Ticket Médio": s["aov"],
+                "% do Total": s["pct"],
+                "_var": pct(s["orders"], prev.get("orders")) if prev else None,
+            })
+        df = pd.DataFrame(rows)
+        df["Receita Google Ads"] = df["Receita Google Ads"].apply(lambda v: f"R$ {v:,.2f}")
+        df["Ticket Médio"] = df["Ticket Médio"].apply(lambda v: f"R$ {v:,.2f}")
+        df["% do Total"] = df["% do Total"].apply(lambda v: f"{v:.1f}%")
+        df["Var. Pedidos"] = df["_var"].apply(
+            lambda v: f"+{v:.1f}%" if v is not None and v >= 0 else (f"{v:.1f}%" if v is not None else "—")
+        )
+        df.drop(columns=["_var"], inplace=True)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.info("Nenhum dado geográfico disponível para o período selecionado.")
+
+    st.markdown('<div class="section-title">Top 40 Cidades — Pedidos Google Ads</div>', unsafe_allow_html=True)
+    if cities_cur:
+        rows = []
+        for c in cities_cur:
+            prev = cities_prev.get((c["city"], c["state_code"]), {})
+            rows.append({
+                "Cidade": c["city"],
+                "UF": c["state_code"],
+                "Pedidos": c["orders"],
+                "Receita Google Ads": c["revenue"],
+                "Ticket Médio": c["aov"],
+                "% do Total": c["pct"],
+                "_var": pct(c["orders"], prev.get("orders")) if prev else None,
+            })
+        df = pd.DataFrame(rows)
+        df["Receita Google Ads"] = df["Receita Google Ads"].apply(lambda v: f"R$ {v:,.2f}")
+        df["Ticket Médio"] = df["Ticket Médio"].apply(lambda v: f"R$ {v:,.2f}")
+        df["% do Total"] = df["% do Total"].apply(lambda v: f"{v:.1f}%")
+        df["Var. Pedidos"] = df["_var"].apply(
+            lambda v: f"+{v:.1f}%" if v is not None and v >= 0 else (f"{v:.1f}%" if v is not None else "—")
+        )
+        df.drop(columns=["_var"], inplace=True)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.info("Nenhum dado geográfico disponível para o período selecionado.")
+
+
 def check_auth():
     if st.session_state.get("authenticated"):
         return True
@@ -403,8 +504,11 @@ def main():
     roas_real_cur = shopify_cur["google_revenue"] / gads_cur["cost"] if gads_cur["cost"] else 0
     roas_real_prev = shopify_prev["google_revenue"] / gads_prev["cost"] if gads_prev["cost"] else 0
 
+    # ── Google Ads — Performance de Mídia ────────────────────────────
+    st.markdown('<div class="big-section">📣 Google Ads — Performance de Mídia</div>', unsafe_allow_html=True)
+
     # --- KPI Cards ---
-    st.markdown('<div class="section-title">Métricas Principais — Google Ads (Último Clique Não Direto)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Métricas Principais — Receita Atribuída (Shopify / Último Clique Não Direto)</div>', unsafe_allow_html=True)
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -488,6 +592,16 @@ def main():
     df_camps["CTR (%)"] = df_camps["CTR (%)"].apply(lambda v: f"{v:.2f}%")
     st.dataframe(df_camps, use_container_width=True, hide_index=True)
 
+    # ── Shopify — Performance de E-commerce ──────────────────────────
+    st.markdown('<div class="big-section big-section-shopify">🛍️ Shopify — Performance de E-commerce</div>', unsafe_allow_html=True)
+
+    # --- Canais de Vendas ---
+    st.markdown('<div class="section-title">Canais de Vendas — Shopify (Todos os Pedidos)</div>', unsafe_allow_html=True)
+    render_channel_table(
+        shopify_cur.get("channels", []),
+        shopify_prev.get("channels", []),
+    )
+
     # --- Top 20 produtos ---
     st.markdown('<div class="section-title">Top 20 Produtos — Google Ads (Período Atual)</div>', unsafe_allow_html=True)
     df_prod = products_dataframe(shopify_cur, shopify_prev)
@@ -497,6 +611,9 @@ def main():
         lambda v: f"+{v:.1f}%" if v is not None and v >= 0 else (f"{v:.1f}%" if v is not None else "—")
     )
     st.dataframe(df_prod, use_container_width=True, hide_index=True)
+
+    # --- Dados Geográficos ---
+    render_geo_tables(shopify_cur, shopify_prev)
 
     # --- Análise Claude ---
     st.markdown('<div class="section-title">Análise e Recomendações — Claude AI</div>', unsafe_allow_html=True)

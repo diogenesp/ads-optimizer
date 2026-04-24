@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from dotenv import load_dotenv
 import requests
+from urllib.parse import urlparse, parse_qs
 
 load_dotenv()
 
@@ -64,6 +65,137 @@ def is_google_ads(order):
     return False
 
 
+def _utm(landing: str, key: str) -> str:
+    try:
+        qs = parse_qs(urlparse(landing).query)
+        return (qs.get(key) or [""])[0].lower()
+    except Exception:
+        return ""
+
+
+def classify_channel(order) -> tuple:
+    referring = (order.get("referring_site") or "").lower()
+    landing = (order.get("landing_site") or "").lower()
+    source = (order.get("source_name") or "").lower()
+
+    utm_source = _utm(landing, "utm_source")
+    utm_medium = _utm(landing, "utm_medium")
+
+    # Google Ads — paid
+    if "gclid" in landing or "gad_source" in landing:
+        return "Google Ads", "Pago"
+    if utm_source == "google" and utm_medium in ("cpc", "ppc", "paid", "paidsearch"):
+        return "Google Ads", "Pago"
+
+    # Meta Ads — paid
+    if "fbclid" in landing:
+        return "Meta Ads", "Pago"
+    if utm_source in ("facebook", "instagram", "meta") and utm_medium in (
+        "paid", "cpc", "paidsocial", "ad", "ads"
+    ):
+        return "Meta Ads", "Pago"
+
+    # E-mail / Newsletter
+    if utm_medium in ("email", "newsletter") or utm_source in (
+        "klaviyo", "mailchimp", "email", "newsletter", "omnisend"
+    ):
+        return "E-mail / Newsletter", "Orgânico"
+
+    # Organic Google
+    if any(d in referring for d in ("google.com", "google.com.br")):
+        return "Busca Orgânica", "Orgânico"
+
+    # Meta — organic
+    if any(d in referring for d in ("facebook.com", "instagram.com", "l.facebook.com")):
+        return "Meta — Orgânico", "Orgânico"
+
+    # POS
+    if source == "pos":
+        return "Ponto de Venda (PDV)", "PDV"
+
+    # Direct
+    if not referring and not utm_source:
+        return "Direto / Digitado", "Direto"
+
+    return "Outros / Referência", "Outros"
+
+
+def channel_stats(orders: list) -> list:
+    channels: dict = {}
+    total_revenue = sum(float(o.get("total_price") or 0) for o in orders)
+
+    for order in orders:
+        canal, tipo = classify_channel(order)
+        price = float(order.get("total_price") or 0)
+        if canal not in channels:
+            channels[canal] = {
+                "canal": canal, "tipo": tipo,
+                "revenue": 0.0, "orders": 0,
+                "new_customers": 0, "returning_customers": 0,
+            }
+        channels[canal]["revenue"] += price
+        channels[canal]["orders"] += 1
+        customer = order.get("customer") or {}
+        if (customer.get("orders_count") or 1) <= 1:
+            channels[canal]["new_customers"] += 1
+        else:
+            channels[canal]["returning_customers"] += 1
+
+    result = []
+    for data in channels.values():
+        result.append({
+            **data,
+            "aov": data["revenue"] / data["orders"] if data["orders"] else 0,
+            "pct_revenue": data["revenue"] / total_revenue * 100 if total_revenue else 0,
+        })
+    return sorted(result, key=lambda x: x["revenue"], reverse=True)
+
+
+def geo_stats(google_orders: list, top_n_states: int = 10, top_n_cities: int = 40):
+    total_orders = len(google_orders)
+    states: dict = {}
+    cities: dict = {}
+
+    for order in google_orders:
+        addr = order.get("shipping_address") or order.get("billing_address") or {}
+        state_name = (addr.get("province") or addr.get("province_code") or "Desconhecido").strip()
+        state_code = (addr.get("province_code") or "??").strip().upper()
+        city = (addr.get("city") or "Desconhecida").strip()
+        price = float(order.get("total_price") or 0)
+
+        if state_code not in states:
+            states[state_code] = {"name": state_name, "orders": 0, "revenue": 0.0}
+        states[state_code]["orders"] += 1
+        states[state_code]["revenue"] += price
+        states[state_code]["name"] = state_name
+
+        city_key = f"{city}||{state_code}"
+        if city_key not in cities:
+            cities[city_key] = {
+                "city": city, "state": state_name, "state_code": state_code,
+                "orders": 0, "revenue": 0.0,
+            }
+        cities[city_key]["orders"] += 1
+        cities[city_key]["revenue"] += price
+
+    def _enrich(data, orders_val):
+        return {**data, "aov": data["revenue"] / data["orders"] if data["orders"] else 0,
+                "pct": data["orders"] / orders_val * 100 if orders_val else 0}
+
+    state_list = sorted(
+        [{"state": v["name"], "state_code": k, **_enrich(v, total_orders)}
+         for k, v in states.items()],
+        key=lambda x: x["revenue"], reverse=True,
+    )[:top_n_states]
+
+    city_list = sorted(
+        [_enrich(v, total_orders) for v in cities.values()],
+        key=lambda x: x["revenue"], reverse=True,
+    )[:top_n_cities]
+
+    return state_list, city_list
+
+
 def product_stats(orders, top_n=20):
     sales = defaultdict(lambda: {"quantity": 0, "revenue": 0.0})
     for order in orders:
@@ -83,6 +215,7 @@ def get_period_data(start_dt, end_dt):
 
     all_revenue = sum(float(o["total_price"]) for o in orders)
     g_revenue = sum(float(o["total_price"]) for o in google_orders)
+    states, cities = geo_stats(google_orders)
 
     return {
         "start": start_dt,
@@ -94,6 +227,9 @@ def get_period_data(start_dt, end_dt):
         "google_revenue": g_revenue,
         "google_ticket": g_revenue / len(google_orders) if google_orders else 0,
         "products": product_stats(google_orders, top_n=20),
+        "channels": channel_stats(orders),
+        "geo_states": states,
+        "geo_cities": cities,
     }
 
 
