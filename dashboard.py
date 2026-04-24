@@ -362,7 +362,7 @@ def render_geo_tables(shopify_cur, shopify_prev):
         df["Ticket Médio"] = df["Ticket Médio"].apply(lambda v: f"R$ {v:,.2f}")
         df["% do Total"] = df["% do Total"].apply(lambda v: f"{v:.1f}%")
         df["Var. Pedidos"] = df["_var"].apply(
-            lambda v: f"+{v:.1f}%" if v is not None and v >= 0 else (f"{v:.1f}%" if v is not None else "—")
+            lambda v: "—" if pd.isna(v) else (f"+{v:.1f}%" if v >= 0 else f"{v:.1f}%")
         )
         df.drop(columns=["_var"], inplace=True)
         st.dataframe(df, use_container_width=True, hide_index=True)
@@ -388,7 +388,7 @@ def render_geo_tables(shopify_cur, shopify_prev):
         df["Ticket Médio"] = df["Ticket Médio"].apply(lambda v: f"R$ {v:,.2f}")
         df["% do Total"] = df["% do Total"].apply(lambda v: f"{v:.1f}%")
         df["Var. Pedidos"] = df["_var"].apply(
-            lambda v: f"+{v:.1f}%" if v is not None and v >= 0 else (f"{v:.1f}%" if v is not None else "—")
+            lambda v: "—" if pd.isna(v) else (f"+{v:.1f}%" if v >= 0 else f"{v:.1f}%")
         )
         df.drop(columns=["_var"], inplace=True)
         st.dataframe(df, use_container_width=True, hide_index=True)
