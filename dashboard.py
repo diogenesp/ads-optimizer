@@ -1,7 +1,7 @@
 import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 import os
 import anthropic
 from dotenv import load_dotenv
@@ -13,6 +13,15 @@ load_dotenv()
 
 REPORT_FILE = "relatorio_smartgr.md"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+PRESETS = [
+    "Ontem",
+    "Últimos 7 dias",
+    "Últimos 14 dias",
+    "Último mês",
+    "Últimos 30 dias",
+    "Últimos 90 dias",
+    "Período personalizado",
+]
 
 st.set_page_config(
     page_title="Smart GR — Performance Dashboard",
@@ -78,18 +87,75 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def get_date_ranges():
-    now = datetime.now(timezone.utc)
-    cur_end = now
-    cur_start = now - timedelta(days=30)
-    prev_end = cur_start
-    prev_start = now - timedelta(days=60)
-    return cur_start, cur_end, prev_start, prev_end
+def _to_dt(d: date) -> datetime:
+    return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+
+
+def _to_dt_end(d: date) -> datetime:
+    return datetime(d.year, d.month, d.day, 23, 59, 59, tzinfo=timezone.utc)
+
+
+def _same_last_year(d: date) -> date:
+    try:
+        return d.replace(year=d.year - 1)
+    except ValueError:
+        return d.replace(year=d.year - 1, day=28)
+
+
+def compute_date_ranges(preset: str, custom_start=None, custom_end=None):
+    today = datetime.now(timezone.utc).date()
+    yesterday = today - timedelta(days=1)
+
+    if preset == "Ontem":
+        cs, ce = yesterday, yesterday
+        ps, pe = _same_last_year(yesterday), _same_last_year(yesterday)
+
+    elif preset == "Últimos 7 dias":
+        ce = yesterday
+        cs = ce - timedelta(days=6)
+        ps, pe = _same_last_year(cs), _same_last_year(ce)
+
+    elif preset == "Últimos 14 dias":
+        ce = yesterday
+        cs = ce - timedelta(days=13)
+        pe = cs - timedelta(days=1)
+        ps = pe - timedelta(days=13)
+
+    elif preset == "Último mês":
+        first_of_this_month = today.replace(day=1)
+        ce = first_of_this_month - timedelta(days=1)
+        cs = ce.replace(day=1)
+        ps, pe = _same_last_year(cs), _same_last_year(ce)
+
+    elif preset == "Últimos 30 dias":
+        ce = yesterday
+        cs = ce - timedelta(days=29)
+        pe = cs - timedelta(days=1)
+        ps = pe - timedelta(days=29)
+
+    elif preset == "Últimos 90 dias":
+        ce = yesterday
+        cs = ce - timedelta(days=89)
+        pe = cs - timedelta(days=1)
+        ps = pe - timedelta(days=89)
+
+    else:  # Período personalizado
+        cs = custom_start or (today - timedelta(days=30))
+        ce = custom_end or yesterday
+        n = (ce - cs).days
+        pe = cs - timedelta(days=1)
+        ps = pe - timedelta(days=n)
+
+    return _to_dt(cs), _to_dt_end(ce), _to_dt(ps), _to_dt_end(pe)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_data(cache_key: str):
-    cur_start, cur_end, prev_start, prev_end = get_date_ranges()
+def load_data(cur_start_iso: str, cur_end_iso: str, prev_start_iso: str, prev_end_iso: str):
+    cur_start = datetime.fromisoformat(cur_start_iso)
+    cur_end = datetime.fromisoformat(cur_end_iso)
+    prev_start = datetime.fromisoformat(prev_start_iso)
+    prev_end = datetime.fromisoformat(prev_end_iso)
+
     shopify_cur = shopify.get_period_data(cur_start, cur_end)
     shopify_prev = shopify.get_period_data(prev_start, prev_end)
     gads_cur = gads.get_period_data(
@@ -261,8 +327,6 @@ def main():
         st.stop()
 
     # --- Session state ---
-    if "cache_key" not in st.session_state:
-        st.session_state.cache_key = datetime.now().isoformat()
     if "last_updated" not in st.session_state:
         st.session_state.last_updated = datetime.now()
     if "claude_analysis" not in st.session_state:
@@ -280,25 +344,57 @@ def main():
     # --- Header ---
     col_title, col_btn = st.columns([5, 1])
     with col_title:
-        cur_start, cur_end, prev_start, prev_end = get_date_ranges()
-        st.markdown(f"## 📊 Smart GR — Performance Dashboard")
-        st.caption(
-            f"Período atual: {cur_start.strftime('%d/%m/%Y')} – {cur_end.strftime('%d/%m/%Y')}  |  "
-            f"Anterior: {prev_start.strftime('%d/%m/%Y')} – {prev_end.strftime('%d/%m/%Y')}"
-        )
+        st.markdown("## 📊 Smart GR — Performance Dashboard")
     with col_btn:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🔄 Atualizar dados"):
-            st.session_state.cache_key = datetime.now().isoformat()
-            st.session_state.last_updated = datetime.now()
             st.cache_data.clear()
+            st.session_state.last_updated = datetime.now()
             st.rerun()
+
+    # --- Date filter ---
+    today = datetime.now(timezone.utc).date()
+    col_preset, col_custom = st.columns([2, 4])
+    with col_preset:
+        preset = st.selectbox("Período de análise", PRESETS, index=4)
+
+    custom_start = custom_end = None
+    if preset == "Período personalizado":
+        with col_custom:
+            date_range = st.date_input(
+                "Selecione o intervalo",
+                value=(today - timedelta(days=30), today - timedelta(days=1)),
+                max_value=today,
+                format="DD/MM/YYYY",
+            )
+            if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+                custom_start, custom_end = date_range[0], date_range[1]
+            elif isinstance(date_range, (list, tuple)) and len(date_range) == 1:
+                custom_start = custom_end = date_range[0]
+            else:
+                custom_start = custom_end = date_range
+
+    cur_start, cur_end, prev_start, prev_end = compute_date_ranges(preset, custom_start, custom_end)
+
+    st.markdown(
+        f"<span style='color:#cdd6f4;font-weight:600;'>"
+        f"{cur_start.strftime('%d/%m/%Y')} – {cur_end.strftime('%d/%m/%Y')}"
+        f"</span>"
+        f"<span style='color:#6c7086;'>&nbsp;&nbsp;vs&nbsp;&nbsp;</span>"
+        f"<span style='color:#a6adc8;'>"
+        f"{prev_start.strftime('%d/%m/%Y')} – {prev_end.strftime('%d/%m/%Y')}"
+        f"</span>",
+        unsafe_allow_html=True,
+    )
 
     # --- Load data ---
     with st.spinner("Carregando dados das APIs…"):
         try:
             shopify_cur, shopify_prev, gads_cur, gads_prev = load_data(
-                st.session_state.cache_key
+                cur_start.isoformat(),
+                cur_end.isoformat(),
+                prev_start.isoformat(),
+                prev_end.isoformat(),
             )
         except Exception as e:
             st.error(f"Erro ao carregar dados: {e}")
