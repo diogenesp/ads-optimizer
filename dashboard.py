@@ -13,6 +13,7 @@ load_dotenv()
 
 REPORT_FILE = "relatorio_smartgr.md"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+CACHE_VERSION = "v3"  # bump to bust stale cache after schema changes
 PRESETS = [
     "Ontem",
     "Últimos 7 dias",
@@ -161,7 +162,7 @@ def compute_date_ranges(preset: str, custom_start=None, custom_end=None):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_data(cur_start_iso: str, cur_end_iso: str, prev_start_iso: str, prev_end_iso: str):
+def load_data(cur_start_iso: str, cur_end_iso: str, prev_start_iso: str, prev_end_iso: str, cache_version: str = CACHE_VERSION):
     cur_start = datetime.fromisoformat(cur_start_iso)
     cur_end = datetime.fromisoformat(cur_end_iso)
     prev_start = datetime.fromisoformat(prev_start_iso)
@@ -496,6 +497,7 @@ def main():
                 cur_end.isoformat(),
                 prev_start.isoformat(),
                 prev_end.isoformat(),
+                CACHE_VERSION,
             )
         except Exception as e:
             st.error(f"Erro ao carregar dados: {e}")

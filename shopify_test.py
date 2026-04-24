@@ -3,7 +3,6 @@ from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from dotenv import load_dotenv
 import requests
-from urllib.parse import urlparse, parse_qs
 
 load_dotenv()
 
@@ -65,59 +64,31 @@ def is_google_ads(order):
     return False
 
 
-def _utm(landing: str, key: str) -> str:
-    try:
-        qs = parse_qs(urlparse(landing).query)
-        return (qs.get(key) or [""])[0].lower()
-    except Exception:
-        return ""
-
-
 def classify_channel(order) -> tuple:
+    source = (order.get("source_name") or "").lower().strip()
     referring = (order.get("referring_site") or "").lower()
     landing = (order.get("landing_site") or "").lower()
-    source = (order.get("source_name") or "").lower()
+    has_paid_click = "gclid" in landing or "gad_source" in landing
 
-    utm_source = _utm(landing, "utm_source")
-    utm_medium = _utm(landing, "utm_medium")
-
-    # Google Ads — paid
-    if "gclid" in landing or "gad_source" in landing:
-        return "Google Ads", "Pago"
-    if utm_source == "google" and utm_medium in ("cpc", "ppc", "paid", "paidsearch"):
-        return "Google Ads", "Pago"
-
-    # Meta Ads — paid
-    if "fbclid" in landing:
-        return "Meta Ads", "Pago"
-    if utm_source in ("facebook", "instagram", "meta") and utm_medium in (
-        "paid", "cpc", "paidsocial", "ad", "ads"
-    ):
-        return "Meta Ads", "Pago"
-
-    # E-mail / Newsletter
-    if utm_medium in ("email", "newsletter") or utm_source in (
-        "klaviyo", "mailchimp", "email", "newsletter", "omnisend"
-    ):
-        return "E-mail / Newsletter", "Orgânico"
-
-    # Organic Google
-    if any(d in referring for d in ("google.com", "google.com.br")):
-        return "Busca Orgânica", "Orgânico"
-
-    # Meta — organic
-    if any(d in referring for d in ("facebook.com", "instagram.com", "l.facebook.com")):
-        return "Meta — Orgânico", "Orgânico"
-
-    # POS
+    # source_name-based signals (non-web channels)
+    if source == "tiktok":
+        return "TikTok", "Social"
     if source == "pos":
-        return "Ponto de Venda (PDV)", "PDV"
+        return "PDV", "PDV"
+    if source == "google":
+        return "Google Ads", "Pago"
+    if source in ("facebook", "instagram"):
+        return "Meta Ads", "Social"
 
-    # Direct
-    if not referring and not utm_source:
-        return "Direto / Digitado", "Direto"
+    # referring_site-based (web orders)
+    if "google" in referring:
+        return ("Google Ads", "Pago") if has_paid_click else ("Google Orgânico", "Orgânico")
+    if any(d in referring for d in ("instagram.com", "facebook.com", "l.facebook.com", "l.instagram.com")):
+        return "Instagram / Facebook", "Social"
+    if not referring:
+        return "Direto", "Direto"
 
-    return "Outros / Referência", "Outros"
+    return "Outros", "Outros"
 
 
 def channel_stats(orders: list) -> list:
@@ -152,45 +123,60 @@ def channel_stats(orders: list) -> list:
 
 
 def geo_stats(google_orders: list, top_n_states: int = 10, top_n_cities: int = 40):
+    if not google_orders:
+        return [], []
+
     total_orders = len(google_orders)
     states: dict = {}
     cities: dict = {}
 
     for order in google_orders:
         addr = order.get("shipping_address") or order.get("billing_address") or {}
-        state_name = (addr.get("province") or addr.get("province_code") or "Desconhecido").strip()
-        state_code = (addr.get("province_code") or "??").strip().upper()
-        city = (addr.get("city") or "Desconhecida").strip()
+        province_code = (addr.get("province_code") or "").strip().upper() or "??"
+        province_name = (addr.get("province") or province_code).strip()
+        city_name = (addr.get("city") or "Desconhecida").strip()
         price = float(order.get("total_price") or 0)
 
-        if state_code not in states:
-            states[state_code] = {"name": state_name, "orders": 0, "revenue": 0.0}
-        states[state_code]["orders"] += 1
-        states[state_code]["revenue"] += price
-        states[state_code]["name"] = state_name
+        if province_code not in states:
+            states[province_code] = {"name": province_name, "orders": 0, "revenue": 0.0}
+        states[province_code]["orders"] += 1
+        states[province_code]["revenue"] += price
 
-        city_key = f"{city}||{state_code}"
+        city_key = f"{city_name}||{province_code}"
         if city_key not in cities:
             cities[city_key] = {
-                "city": city, "state": state_name, "state_code": state_code,
+                "city": city_name, "state": province_name, "state_code": province_code,
                 "orders": 0, "revenue": 0.0,
             }
         cities[city_key]["orders"] += 1
         cities[city_key]["revenue"] += price
 
-    def _enrich(data, orders_val):
-        return {**data, "aov": data["revenue"] / data["orders"] if data["orders"] else 0,
-                "pct": data["orders"] / orders_val * 100 if orders_val else 0}
-
     state_list = sorted(
-        [{"state": v["name"], "state_code": k, **_enrich(v, total_orders)}
-         for k, v in states.items()],
-        key=lambda x: x["revenue"], reverse=True,
+        [
+            {
+                "state": v["name"], "state_code": k,
+                "orders": v["orders"], "revenue": v["revenue"],
+                "aov": v["revenue"] / v["orders"] if v["orders"] else 0,
+                "pct": v["orders"] / total_orders * 100 if total_orders else 0,
+            }
+            for k, v in states.items()
+        ],
+        key=lambda x: x["revenue"],
+        reverse=True,
     )[:top_n_states]
 
     city_list = sorted(
-        [_enrich(v, total_orders) for v in cities.values()],
-        key=lambda x: x["revenue"], reverse=True,
+        [
+            {
+                "city": v["city"], "state": v["state"], "state_code": v["state_code"],
+                "orders": v["orders"], "revenue": v["revenue"],
+                "aov": v["revenue"] / v["orders"] if v["orders"] else 0,
+                "pct": v["orders"] / total_orders * 100 if total_orders else 0,
+            }
+            for v in cities.values()
+        ],
+        key=lambda x: x["revenue"],
+        reverse=True,
     )[:top_n_cities]
 
     return state_list, city_list
