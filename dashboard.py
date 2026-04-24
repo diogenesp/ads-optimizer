@@ -206,7 +206,6 @@ def generate_claude_analysis(shopify_cur, shopify_prev, gads_cur, gads_prev):
     prompt = analyze.build_prompt(data_report)
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    placeholder = st.empty()
     full = ""
 
     with client.messages.stream(
@@ -221,15 +220,12 @@ def generate_claude_analysis(shopify_cur, shopify_prev, gads_cur, gads_prev):
     ) as stream:
         for text in stream.text_stream:
             full += text
-            placeholder.markdown(full + "▌")
-
-    placeholder.markdown(full)
 
     now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
     with open(REPORT_FILE, "w", encoding="utf-8") as f:
         f.write(f"# Relatório Smart GR — Gerado em {now_str}\n\n{full}")
 
-    return full
+    return full, now_str
 
 
 def check_auth():
@@ -269,6 +265,17 @@ def main():
         st.session_state.cache_key = datetime.now().isoformat()
     if "last_updated" not in st.session_state:
         st.session_state.last_updated = datetime.now()
+    if "claude_analysis" not in st.session_state:
+        if os.path.exists(REPORT_FILE):
+            with open(REPORT_FILE, encoding="utf-8") as f:
+                cached = f.read()
+            first_line = cached.split("\n")[0] if cached else ""
+            date_str = first_line.split("— Gerado em")[-1].strip() if "— Gerado em" in first_line else None
+            st.session_state.claude_analysis = cached
+            st.session_state.claude_analysis_date = date_str
+        else:
+            st.session_state.claude_analysis = None
+            st.session_state.claude_analysis_date = None
 
     # --- Header ---
     col_title, col_btn = st.columns([5, 1])
@@ -398,11 +405,6 @@ def main():
     # --- Análise Claude ---
     st.markdown('<div class="section-title">Análise e Recomendações — Claude AI</div>', unsafe_allow_html=True)
 
-    report_content = ""
-    if os.path.exists(REPORT_FILE):
-        with open(REPORT_FILE, encoding="utf-8") as f:
-            report_content = f.read()
-
     col_report, col_gen = st.columns([4, 1])
     with col_gen:
         generate = st.button("🤖 Gerar nova análise")
@@ -411,18 +413,22 @@ def main():
         if not ANTHROPIC_API_KEY:
             st.error("ANTHROPIC_API_KEY não encontrada no .env")
         else:
-            with st.spinner("Gerando análise com Claude…"):
-                report_content = generate_claude_analysis(
+            with st.spinner("Claude está processando a análise… isso pode levar alguns segundos."):
+                content, date_str = generate_claude_analysis(
                     shopify_cur, shopify_prev, gads_cur, gads_prev
                 )
-            st.success("Análise gerada e salva em relatorio_smartgr.md")
-            st.rerun()
+            st.session_state.claude_analysis = content
+            st.session_state.claude_analysis_date = date_str
+            st.success("Análise gerada e salva!")
 
-    if report_content:
+    if st.session_state.get("claude_analysis_date"):
+        st.caption(f"Última análise gerada em: {st.session_state.claude_analysis_date}")
+
+    if st.session_state.get("claude_analysis"):
         with st.expander("Ver relatório completo", expanded=True):
-            st.markdown(report_content)
+            st.markdown(st.session_state.claude_analysis)
     else:
-        st.info("Nenhum relatório gerado ainda. Clique em 'Gerar nova análise'.")
+        st.info("Nenhum relatório gerado ainda. Clique em '🤖 Gerar nova análise'.")
 
     # --- Footer ---
     last = st.session_state.last_updated.strftime("%d/%m/%Y às %H:%M:%S")
