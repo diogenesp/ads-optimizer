@@ -15,9 +15,10 @@ load_dotenv()
 
 REPORT_FILE = "relatorio_smartgr.md"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-CACHE_VERSION = "v4"  # bump to bust stale cache after schema changes
+CACHE_VERSION = "v5"  # bump to bust stale cache after schema changes
 PRESETS = [
     "Ontem",
+    "Este mês",
     "Últimos 7 dias",
     "Últimos 14 dias",
     "Último mês",
@@ -112,22 +113,35 @@ def _to_dt_end(d: date) -> datetime:
 def _same_last_year(d: date) -> date:
     try:
         return d.replace(year=d.year - 1)
-    except ValueError:
+    except ValueError:  # Feb 29 in leap year → Feb 28
         return d.replace(year=d.year - 1, day=28)
 
 
 def compute_date_ranges(preset: str, custom_start=None, custom_end=None):
+    """Returns (cur_start, cur_end, prev_start, prev_end, ya_start, ya_end).
+
+    prev_* = período imediatamente anterior de mesma duração.
+    ya_*   = mesmo período um ano atrás.
+    """
     today = datetime.now(timezone.utc).date()
     yesterday = today - timedelta(days=1)
 
     if preset == "Ontem":
         cs, ce = yesterday, yesterday
-        ps, pe = _same_last_year(yesterday), _same_last_year(yesterday)
+        ps, pe = yesterday - timedelta(days=1), yesterday - timedelta(days=1)
+
+    elif preset == "Este mês":
+        cs = today.replace(day=1)
+        ce = yesterday if yesterday >= cs else cs  # guard for 1st of month
+        prev_month_last = cs - timedelta(days=1)  # último dia do mês anterior
+        ps = prev_month_last.replace(day=1)        # 1º dia do mês anterior
+        pe = ps + timedelta(days=(ce - cs).days)   # mesmo nº de dias
 
     elif preset == "Últimos 7 dias":
         ce = yesterday
         cs = ce - timedelta(days=6)
-        ps, pe = _same_last_year(cs), _same_last_year(ce)
+        pe = cs - timedelta(days=1)
+        ps = pe - timedelta(days=6)
 
     elif preset == "Últimos 14 dias":
         ce = yesterday
@@ -137,9 +151,11 @@ def compute_date_ranges(preset: str, custom_start=None, custom_end=None):
 
     elif preset == "Último mês":
         first_of_this_month = today.replace(day=1)
-        ce = first_of_this_month - timedelta(days=1)
-        cs = ce.replace(day=1)
-        ps, pe = _same_last_year(cs), _same_last_year(ce)
+        ce = first_of_this_month - timedelta(days=1)  # último dia do mês passado
+        cs = ce.replace(day=1)                         # 1º dia do mês passado
+        prev_month_last = cs - timedelta(days=1)       # último dia de 2 meses atrás
+        ps = prev_month_last.replace(day=1)
+        pe = prev_month_last
 
     elif preset == "Últimos 30 dias":
         ce = yesterday
@@ -160,7 +176,8 @@ def compute_date_ranges(preset: str, custom_start=None, custom_end=None):
         pe = cs - timedelta(days=1)
         ps = pe - timedelta(days=n)
 
-    return _to_dt(cs), _to_dt_end(ce), _to_dt(ps), _to_dt_end(pe)
+    ya_s, ya_e = _same_last_year(cs), _same_last_year(ce)
+    return _to_dt(cs), _to_dt_end(ce), _to_dt(ps), _to_dt_end(pe), _to_dt(ya_s), _to_dt_end(ya_e)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -183,6 +200,16 @@ def load_data(cur_start_iso: str, cur_end_iso: str, prev_start_iso: str, prev_en
     return shopify_cur, shopify_prev, gads_cur, gads_prev, full_cur, full_prev
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_yago_data(ya_start_iso: str, ya_end_iso: str, cache_version: str = CACHE_VERSION):
+    ya_start = datetime.fromisoformat(ya_start_iso)
+    ya_end = datetime.fromisoformat(ya_end_iso)
+    shopify_ya = shopify.get_period_data(ya_start, ya_end)
+    gads_ya = gads.get_period_data(ya_start.replace(tzinfo=None), ya_end.replace(tzinfo=None))
+    full_ya = shopify.get_full_period_data(ya_start, ya_end)
+    return shopify_ya, gads_ya, full_ya
+
+
 def pct(current, previous):
     if not previous:
         return None
@@ -195,7 +222,7 @@ def _fmt_brl(value: float) -> str:
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def metric_card(label, value, delta_val, prefix="R$ ", fmt=",.0f", inverse=False, suffix=""):
+def metric_card(label, value, delta_val, prefix="R$ ", fmt=",.0f", inverse=False, suffix="", delta_ya=None):
     if delta_val is None:
         delta_html = '<span class="delta-neu">— sem dados anteriores</span>'
     else:
@@ -204,12 +231,19 @@ def metric_card(label, value, delta_val, prefix="R$ ", fmt=",.0f", inverse=False
         arrow = "▲" if delta_val >= 0 else "▼"
         delta_html = f'<span class="{css}">{arrow} {sign}{delta_val:.1f}% vs período anterior</span>'
 
+    ya_html = ""
+    if delta_ya is not None:
+        sign = "+" if delta_ya >= 0 else ""
+        css = "delta-pos" if (delta_ya >= 0) != inverse else "delta-neg"
+        arrow = "▲" if delta_ya >= 0 else "▼"
+        ya_html = f'<br><span class="{css}" style="font-size:11px;">{arrow} {sign}{delta_ya:.1f}% vs ano anterior</span>'
+
     val_str = f"R$ {_fmt_brl(value)}" if prefix == "R$ " else f"{prefix}{value:{fmt}}{suffix}"
     st.markdown(f"""
     <div class="metric-card">
         <div class="metric-label">{label}</div>
         <div class="metric-value">{val_str}</div>
-        {delta_html}
+        {delta_html}{ya_html}
     </div>
     """, unsafe_allow_html=True)
 
@@ -316,16 +350,17 @@ def generate_claude_analysis(shopify_cur, shopify_prev, gads_cur, gads_prev):
     return full, now_str
 
 
-def render_channel_table(channels_cur, channels_prev):
+def render_channel_table(channels_cur, channels_prev, channels_ya=None):
     if not channels_cur:
         st.info("Nenhum dado de canal disponível para o período.")
         return
     prev_map = {c["canal"]: c for c in (channels_prev or [])}
+    ya_map = {c["canal"]: c for c in (channels_ya or [])}
     rows = []
     for ch in channels_cur:
         prev = prev_map.get(ch["canal"], {})
-        var = pct(ch["orders"], prev.get("orders")) if prev else None
-        rows.append({
+        ya = ya_map.get(ch["canal"], {})
+        row = {
             "Canal": ch["canal"],
             "Tipo": ch["tipo"],
             "Pedidos": ch["orders"],
@@ -334,8 +369,11 @@ def render_channel_table(channels_cur, channels_prev):
             "% das Vendas": ch["pct_revenue"],
             "Novos Clientes": ch["new_customers"],
             "Recorrentes": ch["returning_customers"],
-            "_var": var,
-        })
+            "_var": pct(ch["orders"], prev.get("orders")) if prev else None,
+        }
+        if channels_ya is not None:
+            row["_var_ya"] = pct(ch["orders"], ya.get("orders")) if ya else None
+        rows.append(row)
     df = pd.DataFrame(rows)
     df["Vendas (R$)"] = df["Vendas (R$)"].apply(lambda v: f"R$ {v:,.2f}")
     df["AOV"] = df["AOV"].apply(lambda v: f"R$ {v:,.2f}")
@@ -344,38 +382,47 @@ def render_channel_table(channels_cur, channels_prev):
         lambda v: f"+{v:.1f}%" if v is not None and v >= 0 else (f"{v:.1f}%" if v is not None else "—")
     )
     df.drop(columns=["_var"], inplace=True)
+    if "_var_ya" in df.columns:
+        df["Var% Ano Ant."] = df["_var_ya"].apply(
+            lambda v: f"+{v:.1f}%" if v is not None and v >= 0 else (f"{v:.1f}%" if v is not None else "—")
+        )
+        df.drop(columns=["_var_ya"], inplace=True)
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 
-def render_geo_tables(shopify_cur, shopify_prev):
+def _var_str(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "—"
+    return f"+{v:.1f}%" if v >= 0 else f"{v:.1f}%"
+
+
+def render_geo_tables(shopify_cur, shopify_prev, shopify_ya=None):
     states_cur = shopify_cur.get("geo_states", [])
     states_prev = {s["state_code"]: s for s in shopify_prev.get("geo_states", [])}
+    states_ya = {s["state_code"]: s for s in (shopify_ya or {}).get("geo_states", [])}
     cities_cur = shopify_cur.get("geo_cities", [])
     cities_prev = {(c["city"], c["state_code"]): c for c in shopify_prev.get("geo_cities", [])}
+    cities_ya = {(c["city"], c["state_code"]): c for c in (shopify_ya or {}).get("geo_cities", [])}
 
     st.markdown('<div class="section-title">Top 10 Estados — Pedidos Google Ads</div>', unsafe_allow_html=True)
     if states_cur:
         rows = []
         for s in states_cur:
             prev = states_prev.get(s["state_code"], {})
-            rows.append({
+            ya = states_ya.get(s["state_code"], {})
+            row = {
                 "Estado": s["state"],
                 "UF": s["state_code"],
                 "Pedidos": s["orders"],
                 "Receita Google Ads": s["revenue"],
                 "Ticket Médio": s["aov"],
                 "% do Total": s["pct"],
-                "_var": pct(s["orders"], prev.get("orders")) if prev else None,
-            })
-        df = pd.DataFrame(rows)
-        df["Receita Google Ads"] = df["Receita Google Ads"].apply(lambda v: f"R$ {v:,.2f}")
-        df["Ticket Médio"] = df["Ticket Médio"].apply(lambda v: f"R$ {v:,.2f}")
-        df["% do Total"] = df["% do Total"].apply(lambda v: f"{v:.1f}%")
-        df["Var. Pedidos"] = df["_var"].apply(
-            lambda v: "—" if pd.isna(v) else (f"+{v:.1f}%" if v >= 0 else f"{v:.1f}%")
-        )
-        df.drop(columns=["_var"], inplace=True)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+                "Var. Pedidos": _var_str(pct(s["orders"], prev.get("orders")) if prev else None),
+            }
+            if shopify_ya is not None:
+                row["Var% Ano Ant."] = _var_str(pct(s["orders"], ya.get("orders")) if ya else None)
+            rows.append(row)
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     else:
         st.info("Nenhum dado geográfico disponível para o período selecionado.")
 
@@ -384,33 +431,36 @@ def render_geo_tables(shopify_cur, shopify_prev):
         rows = []
         for c in cities_cur:
             prev = cities_prev.get((c["city"], c["state_code"]), {})
-            rows.append({
+            ya = cities_ya.get((c["city"], c["state_code"]), {})
+            row = {
                 "Cidade": c["city"],
                 "UF": c["state_code"],
                 "Pedidos": c["orders"],
                 "Receita Google Ads": c["revenue"],
                 "Ticket Médio": c["aov"],
                 "% do Total": c["pct"],
-                "_var": pct(c["orders"], prev.get("orders")) if prev else None,
-            })
-        df = pd.DataFrame(rows)
-        df["Receita Google Ads"] = df["Receita Google Ads"].apply(lambda v: f"R$ {v:,.2f}")
-        df["Ticket Médio"] = df["Ticket Médio"].apply(lambda v: f"R$ {v:,.2f}")
-        df["% do Total"] = df["% do Total"].apply(lambda v: f"{v:.1f}%")
-        df["Var. Pedidos"] = df["_var"].apply(
-            lambda v: "—" if pd.isna(v) else (f"+{v:.1f}%" if v >= 0 else f"{v:.1f}%")
-        )
-        df.drop(columns=["_var"], inplace=True)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+                "Var. Pedidos": _var_str(pct(c["orders"], prev.get("orders")) if prev else None),
+            }
+            if shopify_ya is not None:
+                row["Var% Ano Ant."] = _var_str(pct(c["orders"], ya.get("orders")) if ya else None)
+            rows.append(row)
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     else:
         st.info("Nenhum dado geográfico disponível para o período selecionado.")
 
 
-def render_shopify_full_section(full_cur, full_prev):
+def render_shopify_full_section(full_cur, full_prev, full_ya=None):
     st.markdown(
         '<div class="big-section" style="border-left-color: #cba6f7;">📊 Shopify — Visão Completa</div>',
         unsafe_allow_html=True,
     )
+
+    def _ya(key):
+        """Value from year-ago data or None."""
+        return full_ya[key] if full_ya else None
+
+    def _ya_cust(key):
+        return full_ya["customer_data"][key] if full_ya else None
 
     # ── 1. VISÃO GERAL ─────────────────────────────────────────────────
     st.markdown('<div class="section-title">1. Visão Geral</div>', unsafe_allow_html=True)
@@ -421,12 +471,14 @@ def render_shopify_full_section(full_cur, full_prev):
             "Receita Bruta",
             full_cur["gross_revenue"],
             pct(full_cur["gross_revenue"], full_prev["gross_revenue"]),
+            delta_ya=pct(full_cur["gross_revenue"], _ya("gross_revenue")),
         )
     with c2:
         metric_card(
             "Receita Líquida",
             full_cur["net_revenue"],
             pct(full_cur["net_revenue"], full_prev["net_revenue"]),
+            delta_ya=pct(full_cur["net_revenue"], _ya("net_revenue")),
         )
     with c3:
         metric_card(
@@ -434,6 +486,7 @@ def render_shopify_full_section(full_cur, full_prev):
             full_cur["cancelled_count"],
             pct(full_cur["cancelled_count"], full_prev["cancelled_count"]),
             prefix="", fmt=",d", inverse=True,
+            delta_ya=pct(full_cur["cancelled_count"], _ya("cancelled_count")),
         )
         st.caption(f"Valor: R$ {_fmt_brl(full_cur['cancelled_revenue'])}")
     with c4:
@@ -442,6 +495,7 @@ def render_shopify_full_section(full_cur, full_prev):
             full_cur["refund_count"],
             pct(full_cur["refund_count"], full_prev["refund_count"]),
             prefix="", fmt=",d", inverse=True,
+            delta_ya=pct(full_cur["refund_count"], _ya("refund_count")),
         )
         st.caption(f"Valor: R$ {_fmt_brl(full_cur['refund_total'])}")
 
@@ -463,6 +517,7 @@ def render_shopify_full_section(full_cur, full_prev):
             cust_cur["new_count"],
             pct(cust_cur["new_count"], cust_prev["new_count"]),
             prefix="", fmt=",d",
+            delta_ya=pct(cust_cur["new_count"], _ya_cust("new_count")),
         )
         st.caption(f"{cust_cur['new_pct']:.1f}% do total de clientes")
     with c2:
@@ -471,6 +526,7 @@ def render_shopify_full_section(full_cur, full_prev):
             cust_cur["returning_count"],
             pct(cust_cur["returning_count"], cust_prev["returning_count"]),
             prefix="", fmt=",d",
+            delta_ya=pct(cust_cur["returning_count"], _ya_cust("returning_count")),
         )
         st.caption(f"{cust_cur['returning_pct']:.1f}% do total de clientes")
     with c3:
@@ -479,6 +535,7 @@ def render_shopify_full_section(full_cur, full_prev):
             cust_cur["repurchase_rate"],
             pct(cust_cur["repurchase_rate"], cust_prev["repurchase_rate"]),
             prefix="", fmt=".1f", suffix="%",
+            delta_ya=pct(cust_cur["repurchase_rate"], _ya_cust("repurchase_rate")),
         )
         st.caption("Clientes com mais de 1 pedido no período")
     with c4:
@@ -486,6 +543,7 @@ def render_shopify_full_section(full_cur, full_prev):
             "LTV Médio",
             cust_cur["avg_ltv"],
             pct(cust_cur["avg_ltv"], cust_prev["avg_ltv"]),
+            delta_ya=pct(cust_cur["avg_ltv"], _ya_cust("avg_ltv")),
         )
         st.caption("Receita total histórica / clientes únicos")
 
@@ -527,12 +585,14 @@ def render_shopify_full_section(full_cur, full_prev):
     )
 
     states_prev_map = {s["state_code"]: s for s in full_prev["geo_states_all"]}
+    states_ya_map = {s["state_code"]: s for s in (full_ya or {}).get("geo_states_all", [])}
     st.markdown('<div class="section-title">Top 20 Estados</div>', unsafe_allow_html=True)
     if full_cur["geo_states_all"]:
         rows = []
         for s in full_cur["geo_states_all"]:
             prev = states_prev_map.get(s["state_code"], {})
-            rows.append({
+            ya = states_ya_map.get(s["state_code"], {})
+            row = {
                 "Estado": s["state"],
                 "UF": s["state_code"],
                 "Pedidos": s["orders"],
@@ -540,29 +600,32 @@ def render_shopify_full_section(full_cur, full_prev):
                 "Ticket Médio": s["aov"],
                 "% do Total": s["pct"],
                 "Var%": pct(s["orders"], prev.get("orders")) if prev else None,
-            })
-        st.dataframe(
-            pd.DataFrame(rows),
-            column_config={
-                "Pedidos": st.column_config.NumberColumn("Pedidos", format="%d"),
-                "Receita": st.column_config.NumberColumn("Receita", format="R$ %.2f"),
-                "Ticket Médio": st.column_config.NumberColumn("Ticket Médio", format="R$ %.2f"),
-                "% do Total": st.column_config.NumberColumn("% do Total", format="%.1f%%"),
-                "Var%": st.column_config.NumberColumn("Var%", format="%.1f%%"),
-            },
-            use_container_width=True,
-            hide_index=True,
-        )
+            }
+            if full_ya:
+                row["Var% Ano"] = pct(s["orders"], ya.get("orders")) if ya else None
+            rows.append(row)
+        col_cfg = {
+            "Pedidos": st.column_config.NumberColumn("Pedidos", format="%d"),
+            "Receita": st.column_config.NumberColumn("Receita", format="R$ %.2f"),
+            "Ticket Médio": st.column_config.NumberColumn("Ticket Médio", format="R$ %.2f"),
+            "% do Total": st.column_config.NumberColumn("% do Total", format="%.1f%%"),
+            "Var%": st.column_config.NumberColumn("Var%", format="%.1f%%"),
+        }
+        if full_ya:
+            col_cfg["Var% Ano"] = st.column_config.NumberColumn("Var% Ano Ant.", format="%.1f%%")
+        st.dataframe(pd.DataFrame(rows), column_config=col_cfg, use_container_width=True, hide_index=True)
     else:
         st.info("Nenhum dado geográfico disponível para o período selecionado.")
 
     cities_prev_map = {(c["city"], c["state_code"]): c for c in full_prev["geo_cities_all"]}
+    cities_ya_map = {(c["city"], c["state_code"]): c for c in (full_ya or {}).get("geo_cities_all", [])}
     st.markdown('<div class="section-title">Top 100 Cidades</div>', unsafe_allow_html=True)
     if full_cur["geo_cities_all"]:
         rows = []
         for c in full_cur["geo_cities_all"]:
             prev = cities_prev_map.get((c["city"], c["state_code"]), {})
-            rows.append({
+            ya = cities_ya_map.get((c["city"], c["state_code"]), {})
+            row = {
                 "Cidade": c["city"],
                 "UF": c["state_code"],
                 "Pedidos": c["orders"],
@@ -570,30 +633,33 @@ def render_shopify_full_section(full_cur, full_prev):
                 "Ticket Médio": c["aov"],
                 "% do Total": c["pct"],
                 "Var%": pct(c["orders"], prev.get("orders")) if prev else None,
-            })
-        st.dataframe(
-            pd.DataFrame(rows),
-            column_config={
-                "Pedidos": st.column_config.NumberColumn("Pedidos", format="%d"),
-                "Receita": st.column_config.NumberColumn("Receita", format="R$ %.2f"),
-                "Ticket Médio": st.column_config.NumberColumn("Ticket Médio", format="R$ %.2f"),
-                "% do Total": st.column_config.NumberColumn("% do Total", format="%.1f%%"),
-                "Var%": st.column_config.NumberColumn("Var%", format="%.1f%%"),
-            },
-            use_container_width=True,
-            hide_index=True,
-        )
+            }
+            if full_ya:
+                row["Var% Ano"] = pct(c["orders"], ya.get("orders")) if ya else None
+            rows.append(row)
+        col_cfg = {
+            "Pedidos": st.column_config.NumberColumn("Pedidos", format="%d"),
+            "Receita": st.column_config.NumberColumn("Receita", format="R$ %.2f"),
+            "Ticket Médio": st.column_config.NumberColumn("Ticket Médio", format="R$ %.2f"),
+            "% do Total": st.column_config.NumberColumn("% do Total", format="%.1f%%"),
+            "Var%": st.column_config.NumberColumn("Var%", format="%.1f%%"),
+        }
+        if full_ya:
+            col_cfg["Var% Ano"] = st.column_config.NumberColumn("Var% Ano Ant.", format="%.1f%%")
+        st.dataframe(pd.DataFrame(rows), column_config=col_cfg, use_container_width=True, hide_index=True)
     else:
         st.info("Nenhum dado de cidades disponível para o período selecionado.")
 
     # ── 4. PRODUTOS ────────────────────────────────────────────────────
     st.markdown('<div class="section-title">4. Produtos — Top 50 por Receita</div>', unsafe_allow_html=True)
     prod_prev_map = {p["product"]: p for p in full_prev["products_all"]}
+    prod_ya_map = {p["product"]: p for p in (full_ya or {}).get("products_all", [])}
     if full_cur["products_all"]:
         rows = []
         for i, p in enumerate(full_cur["products_all"], 1):
             prev = prod_prev_map.get(p["product"], {})
-            rows.append({
+            ya = prod_ya_map.get(p["product"], {})
+            row = {
                 "#": i,
                 "Produto": p["product"],
                 "Quantidade": p["quantity"],
@@ -601,20 +667,21 @@ def render_shopify_full_section(full_cur, full_prev):
                 "Ticket Médio": p["aov"],
                 "% Receita": p["pct_revenue"],
                 "Var%": pct(p["revenue"], prev.get("revenue")) if prev else None,
-            })
-        st.dataframe(
-            pd.DataFrame(rows),
-            column_config={
-                "#": st.column_config.NumberColumn("#", format="%d", width="small"),
-                "Quantidade": st.column_config.NumberColumn("Quantidade", format="%d"),
-                "Receita": st.column_config.NumberColumn("Receita", format="R$ %.2f"),
-                "Ticket Médio": st.column_config.NumberColumn("Ticket Médio", format="R$ %.2f"),
-                "% Receita": st.column_config.NumberColumn("% Receita", format="%.1f%%"),
-                "Var%": st.column_config.NumberColumn("Var%", format="%.1f%%"),
-            },
-            use_container_width=True,
-            hide_index=True,
-        )
+            }
+            if full_ya:
+                row["Var% Ano"] = pct(p["revenue"], ya.get("revenue")) if ya else None
+            rows.append(row)
+        col_cfg = {
+            "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+            "Quantidade": st.column_config.NumberColumn("Quantidade", format="%d"),
+            "Receita": st.column_config.NumberColumn("Receita", format="R$ %.2f"),
+            "Ticket Médio": st.column_config.NumberColumn("Ticket Médio", format="R$ %.2f"),
+            "% Receita": st.column_config.NumberColumn("% Receita", format="%.1f%%"),
+            "Var%": st.column_config.NumberColumn("Var%", format="%.1f%%"),
+        }
+        if full_ya:
+            col_cfg["Var% Ano"] = st.column_config.NumberColumn("Var% Ano Ant.", format="%.1f%%")
+        st.dataframe(pd.DataFrame(rows), column_config=col_cfg, use_container_width=True, hide_index=True)
     else:
         st.info("Nenhum dado de produtos disponível para o período selecionado.")
 
@@ -627,18 +694,21 @@ def render_shopify_full_section(full_cur, full_prev):
             "Ticket Médio Geral",
             full_cur["avg_ticket"],
             pct(full_cur["avg_ticket"], full_prev["avg_ticket"]),
+            delta_ya=pct(full_cur["avg_ticket"], _ya("avg_ticket")),
         )
     with c2:
         metric_card(
             "Ticket Médio — Novos Clientes",
             full_cur["new_ticket"],
             pct(full_cur["new_ticket"], full_prev["new_ticket"]),
+            delta_ya=pct(full_cur["new_ticket"], _ya("new_ticket")),
         )
     with c3:
         metric_card(
             "Ticket Médio — Recorrentes",
             full_cur["ret_ticket"],
             pct(full_cur["ret_ticket"], full_prev["ret_ticket"]),
+            delta_ya=pct(full_cur["ret_ticket"], _ya("ret_ticket")),
         )
 
     # ── 6. FINANCEIRO ──────────────────────────────────────────────────
@@ -770,7 +840,7 @@ def main():
     today = datetime.now(timezone.utc).date()
     col_preset, col_custom = st.columns([2, 4])
     with col_preset:
-        preset = st.selectbox("Período de análise", PRESETS, index=4)
+        preset = st.selectbox("Período de análise", PRESETS, index=5)  # default: Últimos 30 dias
 
     custom_start = custom_end = None
     if preset == "Período personalizado":
@@ -788,18 +858,26 @@ def main():
             else:
                 custom_start = custom_end = date_range
 
-    cur_start, cur_end, prev_start, prev_end = compute_date_ranges(preset, custom_start, custom_end)
-
-    st.markdown(
-        f"<span style='color:#cdd6f4;font-weight:600;'>"
-        f"{cur_start.strftime('%d/%m/%Y')} – {cur_end.strftime('%d/%m/%Y')}"
-        f"</span>"
-        f"<span style='color:#6c7086;'>&nbsp;&nbsp;vs&nbsp;&nbsp;</span>"
-        f"<span style='color:#a6adc8;'>"
-        f"{prev_start.strftime('%d/%m/%Y')} – {prev_end.strftime('%d/%m/%Y')}"
-        f"</span>",
-        unsafe_allow_html=True,
+    cur_start, cur_end, prev_start, prev_end, ya_start, ya_end = compute_date_ranges(
+        preset, custom_start, custom_end
     )
+
+    def _fmt_r(s: datetime, e: datetime) -> str:
+        sd, ed = s.strftime("%d/%m/%Y"), e.strftime("%d/%m/%Y")
+        return sd if sd == ed else f"{sd} – {ed}"
+
+    col_period, col_yago_cb = st.columns([3, 2])
+    with col_period:
+        st.markdown(
+            f"<span style='color:#cdd6f4;font-weight:600;'>{_fmt_r(cur_start, cur_end)}</span>"
+            f"<span style='color:#6c7086;'>&nbsp;&nbsp;vs&nbsp;&nbsp;</span>"
+            f"<span style='color:#a6adc8;'>{_fmt_r(prev_start, prev_end)}</span>",
+            unsafe_allow_html=True,
+        )
+    with col_yago_cb:
+        show_yago = st.checkbox("Comparar com ano anterior", value=False)
+        if show_yago:
+            st.caption(f"Ano anterior: {_fmt_r(ya_start, ya_end)}")
 
     # --- Load data ---
     with st.spinner("Carregando dados das APIs…"):
@@ -811,12 +889,19 @@ def main():
                 prev_end.isoformat(),
                 CACHE_VERSION,
             )
+            if show_yago:
+                shopify_ya, gads_ya, full_ya = load_yago_data(
+                    ya_start.isoformat(), ya_end.isoformat(), CACHE_VERSION
+                )
+            else:
+                shopify_ya = gads_ya = full_ya = None
         except Exception as e:
             st.error(f"Erro ao carregar dados: {e}")
             st.stop()
 
     roas_real_cur = shopify_cur["google_revenue"] / gads_cur["cost"] if gads_cur["cost"] else 0
     roas_real_prev = shopify_prev["google_revenue"] / gads_prev["cost"] if gads_prev["cost"] else 0
+    roas_real_ya = (shopify_ya["google_revenue"] / gads_ya["cost"] if gads_ya and gads_ya["cost"] else None) if show_yago else None
 
     # ── Google Ads — Performance de Mídia ────────────────────────────
     st.markdown('<div class="big-section">📣 Google Ads — Performance de Mídia</div>', unsafe_allow_html=True)
@@ -830,14 +915,15 @@ def main():
             "Receita Google Ads",
             shopify_cur["google_revenue"],
             pct(shopify_cur["google_revenue"], shopify_prev["google_revenue"]),
+            delta_ya=pct(shopify_cur["google_revenue"], shopify_ya["google_revenue"]) if shopify_ya else None,
         )
     with c2:
         metric_card(
             "ROAS Real (Shopify / GA)",
             roas_real_cur,
             pct(roas_real_cur, roas_real_prev),
-            prefix="",
-            fmt=".2f",
+            prefix="", fmt=".2f",
+            delta_ya=pct(roas_real_cur, roas_real_ya) if roas_real_ya else None,
         )
         st.caption(f"ROAS reportado Google Ads: {gads_cur['roas']:.2f}x")
     with c3:
@@ -845,29 +931,39 @@ def main():
             "Pedidos Google Ads",
             shopify_cur["google_orders"],
             pct(shopify_cur["google_orders"], shopify_prev["google_orders"]),
-            prefix="",
-            fmt=",d",
+            prefix="", fmt=",d",
+            delta_ya=pct(shopify_cur["google_orders"], shopify_ya["google_orders"]) if shopify_ya else None,
         )
     with c4:
         metric_card(
             "Ticket Médio",
             shopify_cur["google_ticket"],
             pct(shopify_cur["google_ticket"], shopify_prev["google_ticket"]),
+            delta_ya=pct(shopify_cur["google_ticket"], shopify_ya["google_ticket"]) if shopify_ya else None,
         )
 
     # --- KPIs secundários ---
     st.markdown('<div class="section-title">Google Ads — Métricas de Mídia</div>', unsafe_allow_html=True)
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
-        metric_card("Gasto Total", gads_cur["cost"], pct(gads_cur["cost"], gads_prev["cost"]))
+        metric_card("Gasto Total", gads_cur["cost"], pct(gads_cur["cost"], gads_prev["cost"]),
+                    delta_ya=pct(gads_cur["cost"], gads_ya["cost"]) if gads_ya else None)
     with c2:
-        metric_card("Cliques", gads_cur["clicks"], pct(gads_cur["clicks"], gads_prev["clicks"]), prefix="", fmt=",d")
+        metric_card("Cliques", gads_cur["clicks"], pct(gads_cur["clicks"], gads_prev["clicks"]),
+                    prefix="", fmt=",d",
+                    delta_ya=pct(gads_cur["clicks"], gads_ya["clicks"]) if gads_ya else None)
     with c3:
-        metric_card("CTR", gads_cur["ctr"], pct(gads_cur["ctr"], gads_prev["ctr"]), prefix="", fmt=".2f")
+        metric_card("CTR", gads_cur["ctr"], pct(gads_cur["ctr"], gads_prev["ctr"]),
+                    prefix="", fmt=".2f",
+                    delta_ya=pct(gads_cur["ctr"], gads_ya["ctr"]) if gads_ya else None)
     with c4:
-        metric_card("CPC Médio", gads_cur["cpc"], pct(gads_cur["cpc"], gads_prev["cpc"]), inverse=True)
+        metric_card("CPC Médio", gads_cur["cpc"], pct(gads_cur["cpc"], gads_prev["cpc"]),
+                    inverse=True,
+                    delta_ya=pct(gads_cur["cpc"], gads_ya["cpc"]) if gads_ya else None)
     with c5:
-        metric_card("CPA", gads_cur["cpa"], pct(gads_cur["cpa"], gads_prev["cpa"]), inverse=True)
+        metric_card("CPA", gads_cur["cpa"], pct(gads_cur["cpa"], gads_prev["cpa"]),
+                    inverse=True,
+                    delta_ya=pct(gads_cur["cpa"], gads_ya["cpa"]) if gads_ya else None)
 
     # --- Gráfico por campanha ---
     st.markdown('<div class="section-title">Gasto vs Receita por Campanha</div>', unsafe_allow_html=True)
@@ -919,6 +1015,7 @@ def main():
     render_channel_table(
         shopify_cur.get("channels", []),
         shopify_prev.get("channels", []),
+        channels_ya=shopify_ya.get("channels", []) if shopify_ya else None,
     )
 
     # --- Top 20 produtos ---
@@ -932,10 +1029,10 @@ def main():
     st.dataframe(df_prod, use_container_width=True, hide_index=True)
 
     # --- Dados Geográficos ---
-    render_geo_tables(shopify_cur, shopify_prev)
+    render_geo_tables(shopify_cur, shopify_prev, shopify_ya=shopify_ya)
 
     # ── Shopify — Visão Completa ──────────────────────────────────────
-    render_shopify_full_section(full_cur, full_prev)
+    render_shopify_full_section(full_cur, full_prev, full_ya=full_ya)
 
     # --- Análise Claude ---
     st.markdown('<div class="section-title">Análise e Recomendações — Claude AI</div>', unsafe_allow_html=True)
