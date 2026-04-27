@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 
 import shopify_test as shopify
 import google_ads_campaigns as gads
+import importlib
+importlib.reload(shopify)  # garante que o Streamlit auto-reload usa a versão atual do módulo
 
 load_dotenv()
 
