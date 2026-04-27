@@ -13,7 +13,7 @@ load_dotenv()
 
 REPORT_FILE = "relatorio_smartgr.md"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-CACHE_VERSION = "v3"  # bump to bust stale cache after schema changes
+CACHE_VERSION = "v4"  # bump to bust stale cache after schema changes
 PRESETS = [
     "Ontem",
     "Últimos 7 dias",
@@ -176,7 +176,9 @@ def load_data(cur_start_iso: str, cur_end_iso: str, prev_start_iso: str, prev_en
     gads_prev = gads.get_period_data(
         prev_start.replace(tzinfo=None), prev_end.replace(tzinfo=None)
     )
-    return shopify_cur, shopify_prev, gads_cur, gads_prev
+    full_cur = shopify.get_full_period_data(cur_start, cur_end)
+    full_prev = shopify.get_full_period_data(prev_start, prev_end)
+    return shopify_cur, shopify_prev, gads_cur, gads_prev, full_cur, full_prev
 
 
 def pct(current, previous):
@@ -185,7 +187,13 @@ def pct(current, previous):
     return (current - previous) / previous * 100
 
 
-def metric_card(label, value, delta_val, prefix="R$ ", fmt=",.0f", inverse=False):
+def _fmt_brl(value: float) -> str:
+    """Format float as Brazilian number: 1.234.567,89"""
+    s = f"{value:,.2f}"  # US: "1,234,567.89"
+    return s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def metric_card(label, value, delta_val, prefix="R$ ", fmt=",.0f", inverse=False, suffix=""):
     if delta_val is None:
         delta_html = '<span class="delta-neu">— sem dados anteriores</span>'
     else:
@@ -194,7 +202,7 @@ def metric_card(label, value, delta_val, prefix="R$ ", fmt=",.0f", inverse=False
         arrow = "▲" if delta_val >= 0 else "▼"
         delta_html = f'<span class="{css}">{arrow} {sign}{delta_val:.1f}% vs período anterior</span>'
 
-    val_str = f"{prefix}{value:{fmt}}"
+    val_str = f"R$ {_fmt_brl(value)}" if prefix == "R$ " else f"{prefix}{value:{fmt}}{suffix}"
     st.markdown(f"""
     <div class="metric-card">
         <div class="metric-label">{label}</div>
@@ -396,6 +404,308 @@ def render_geo_tables(shopify_cur, shopify_prev):
         st.info("Nenhum dado geográfico disponível para o período selecionado.")
 
 
+def render_shopify_full_section(full_cur, full_prev):
+    st.markdown(
+        '<div class="big-section" style="border-left-color: #cba6f7;">📊 Shopify — Visão Completa</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── 1. VISÃO GERAL ─────────────────────────────────────────────────
+    st.markdown('<div class="section-title">1. Visão Geral</div>', unsafe_allow_html=True)
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        metric_card(
+            "Receita Bruta",
+            full_cur["gross_revenue"],
+            pct(full_cur["gross_revenue"], full_prev["gross_revenue"]),
+        )
+    with c2:
+        metric_card(
+            "Receita Líquida",
+            full_cur["net_revenue"],
+            pct(full_cur["net_revenue"], full_prev["net_revenue"]),
+        )
+    with c3:
+        metric_card(
+            "Cancelamentos",
+            full_cur["cancelled_count"],
+            pct(full_cur["cancelled_count"], full_prev["cancelled_count"]),
+            prefix="", fmt=",d", inverse=True,
+        )
+        st.caption(f"Valor: R$ {_fmt_brl(full_cur['cancelled_revenue'])}")
+    with c4:
+        metric_card(
+            "Reembolsos",
+            full_cur["refund_count"],
+            pct(full_cur["refund_count"], full_prev["refund_count"]),
+            prefix="", fmt=",d", inverse=True,
+        )
+        st.caption(f"Valor: R$ {_fmt_brl(full_cur['refund_total'])}")
+
+    st.info(
+        "Taxa de conversão (pedidos / sessões) requer dados de sessão da Shopify Analytics — "
+        "não disponível via REST API. Consulte Shopify → Análises → Conversão."
+    )
+
+    # ── 2. CLIENTES ────────────────────────────────────────────────────
+    st.markdown('<div class="section-title">2. Clientes</div>', unsafe_allow_html=True)
+
+    cust_cur = full_cur["customer_data"]
+    cust_prev = full_prev["customer_data"]
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        metric_card(
+            "Novos Clientes",
+            cust_cur["new_count"],
+            pct(cust_cur["new_count"], cust_prev["new_count"]),
+            prefix="", fmt=",d",
+        )
+        st.caption(f"{cust_cur['new_pct']:.1f}% do total de clientes")
+    with c2:
+        metric_card(
+            "Clientes Recorrentes",
+            cust_cur["returning_count"],
+            pct(cust_cur["returning_count"], cust_prev["returning_count"]),
+            prefix="", fmt=",d",
+        )
+        st.caption(f"{cust_cur['returning_pct']:.1f}% do total de clientes")
+    with c3:
+        metric_card(
+            "Taxa de Recompra",
+            cust_cur["repurchase_rate"],
+            pct(cust_cur["repurchase_rate"], cust_prev["repurchase_rate"]),
+            prefix="", fmt=".1f", suffix="%",
+        )
+        st.caption("Clientes com mais de 1 pedido no período")
+    with c4:
+        metric_card(
+            "LTV Médio",
+            cust_cur["avg_ltv"],
+            pct(cust_cur["avg_ltv"], cust_prev["avg_ltv"]),
+        )
+        st.caption("Receita total histórica / clientes únicos")
+
+    st.markdown('<div class="section-title">Top 100 Clientes por Receita</div>', unsafe_allow_html=True)
+    top100 = cust_cur.get("top_100", [])
+    if top100:
+        rows = []
+        for i, c in enumerate(top100, 1):
+            orders_n = c["order_count"]
+            rows.append({
+                "#": i,
+                "Nome": c["name"],
+                "E-mail": c["email"],
+                "Pedidos": orders_n,
+                "Receita Total": c["total_revenue"],
+                "Ticket Médio": c["total_revenue"] / orders_n if orders_n else 0.0,
+                "Último Pedido": c["last_order"][:10] if c.get("last_order") else "—",
+                "Tipo": "Novo" if c["is_new"] else "Recorrente",
+            })
+        df_cust = pd.DataFrame(rows)
+        st.dataframe(
+            df_cust,
+            column_config={
+                "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+                "Pedidos": st.column_config.NumberColumn("Pedidos", format="%d"),
+                "Receita Total": st.column_config.NumberColumn("Receita Total", format="R$ %.2f"),
+                "Ticket Médio": st.column_config.NumberColumn("Ticket Médio", format="R$ %.2f"),
+            },
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("Nenhum dado de clientes disponível para o período.")
+
+    # ── 3. GEOGRÁFICO — TODOS OS PEDIDOS ───────────────────────────────
+    st.markdown(
+        '<div class="section-title">3. Geográfico — Todos os Pedidos Shopify</div>',
+        unsafe_allow_html=True,
+    )
+
+    states_prev_map = {s["state_code"]: s for s in full_prev["geo_states_all"]}
+    st.markdown('<div class="section-title">Top 20 Estados</div>', unsafe_allow_html=True)
+    if full_cur["geo_states_all"]:
+        rows = []
+        for s in full_cur["geo_states_all"]:
+            prev = states_prev_map.get(s["state_code"], {})
+            rows.append({
+                "Estado": s["state"],
+                "UF": s["state_code"],
+                "Pedidos": s["orders"],
+                "Receita": s["revenue"],
+                "Ticket Médio": s["aov"],
+                "% do Total": s["pct"],
+                "Var%": pct(s["orders"], prev.get("orders")) if prev else None,
+            })
+        st.dataframe(
+            pd.DataFrame(rows),
+            column_config={
+                "Pedidos": st.column_config.NumberColumn("Pedidos", format="%d"),
+                "Receita": st.column_config.NumberColumn("Receita", format="R$ %.2f"),
+                "Ticket Médio": st.column_config.NumberColumn("Ticket Médio", format="R$ %.2f"),
+                "% do Total": st.column_config.NumberColumn("% do Total", format="%.1f%%"),
+                "Var%": st.column_config.NumberColumn("Var%", format="%.1f%%"),
+            },
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("Nenhum dado geográfico disponível para o período selecionado.")
+
+    cities_prev_map = {(c["city"], c["state_code"]): c for c in full_prev["geo_cities_all"]}
+    st.markdown('<div class="section-title">Top 100 Cidades</div>', unsafe_allow_html=True)
+    if full_cur["geo_cities_all"]:
+        rows = []
+        for c in full_cur["geo_cities_all"]:
+            prev = cities_prev_map.get((c["city"], c["state_code"]), {})
+            rows.append({
+                "Cidade": c["city"],
+                "UF": c["state_code"],
+                "Pedidos": c["orders"],
+                "Receita": c["revenue"],
+                "Ticket Médio": c["aov"],
+                "% do Total": c["pct"],
+                "Var%": pct(c["orders"], prev.get("orders")) if prev else None,
+            })
+        st.dataframe(
+            pd.DataFrame(rows),
+            column_config={
+                "Pedidos": st.column_config.NumberColumn("Pedidos", format="%d"),
+                "Receita": st.column_config.NumberColumn("Receita", format="R$ %.2f"),
+                "Ticket Médio": st.column_config.NumberColumn("Ticket Médio", format="R$ %.2f"),
+                "% do Total": st.column_config.NumberColumn("% do Total", format="%.1f%%"),
+                "Var%": st.column_config.NumberColumn("Var%", format="%.1f%%"),
+            },
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("Nenhum dado de cidades disponível para o período selecionado.")
+
+    # ── 4. PRODUTOS ────────────────────────────────────────────────────
+    st.markdown('<div class="section-title">4. Produtos — Top 50 por Receita</div>', unsafe_allow_html=True)
+    prod_prev_map = {p["product"]: p for p in full_prev["products_all"]}
+    if full_cur["products_all"]:
+        rows = []
+        for i, p in enumerate(full_cur["products_all"], 1):
+            prev = prod_prev_map.get(p["product"], {})
+            rows.append({
+                "#": i,
+                "Produto": p["product"],
+                "Quantidade": p["quantity"],
+                "Receita": p["revenue"],
+                "Ticket Médio": p["aov"],
+                "% Receita": p["pct_revenue"],
+                "Var%": pct(p["revenue"], prev.get("revenue")) if prev else None,
+            })
+        st.dataframe(
+            pd.DataFrame(rows),
+            column_config={
+                "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+                "Quantidade": st.column_config.NumberColumn("Quantidade", format="%d"),
+                "Receita": st.column_config.NumberColumn("Receita", format="R$ %.2f"),
+                "Ticket Médio": st.column_config.NumberColumn("Ticket Médio", format="R$ %.2f"),
+                "% Receita": st.column_config.NumberColumn("% Receita", format="%.1f%%"),
+                "Var%": st.column_config.NumberColumn("Var%", format="%.1f%%"),
+            },
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("Nenhum dado de produtos disponível para o período selecionado.")
+
+    # ── 5. PEDIDOS ─────────────────────────────────────────────────────
+    st.markdown('<div class="section-title">5. Pedidos</div>', unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        metric_card(
+            "Ticket Médio Geral",
+            full_cur["avg_ticket"],
+            pct(full_cur["avg_ticket"], full_prev["avg_ticket"]),
+        )
+    with c2:
+        metric_card(
+            "Ticket Médio — Novos Clientes",
+            full_cur["new_ticket"],
+            pct(full_cur["new_ticket"], full_prev["new_ticket"]),
+        )
+    with c3:
+        metric_card(
+            "Ticket Médio — Recorrentes",
+            full_cur["ret_ticket"],
+            pct(full_cur["ret_ticket"], full_prev["ret_ticket"]),
+        )
+
+    # ── 6. FINANCEIRO ──────────────────────────────────────────────────
+    st.markdown('<div class="section-title">6. Financeiro</div>', unsafe_allow_html=True)
+
+    WEEKDAYS = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
+    by_weekday = full_cur["by_weekday"]
+    fig_wd = go.Figure(go.Bar(
+        x=WEEKDAYS,
+        y=[by_weekday.get(d, 0) for d in WEEKDAYS],
+        marker_color="#cba6f7",
+        hovertemplate="<b>%{x}</b><br>Receita: R$ %{y:,.2f}<extra></extra>",
+    ))
+    fig_wd.update_layout(
+        title="Receita por Dia da Semana",
+        paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e",
+        font=dict(color="#cdd6f4", size=12),
+        yaxis=dict(tickprefix="R$ ", gridcolor="#313244", tickformat=",.0f"),
+        xaxis=dict(gridcolor="#313244"),
+        height=320, margin=dict(l=10, r=10, t=40, b=40),
+    )
+    st.plotly_chart(fig_wd, use_container_width=True)
+
+    by_hour = full_cur["by_hour"]
+    fig_hr = go.Figure(go.Bar(
+        x=[f"{h:02d}h" for h in range(24)],
+        y=[by_hour.get(h, 0) for h in range(24)],
+        marker_color="#89b4fa",
+        hovertemplate="<b>%{x}</b><br>Receita: R$ %{y:,.2f}<extra></extra>",
+    ))
+    fig_hr.update_layout(
+        title="Receita por Horário do Dia (Horário de Brasília)",
+        paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e",
+        font=dict(color="#cdd6f4", size=12),
+        yaxis=dict(tickprefix="R$ ", gridcolor="#313244", tickformat=",.0f"),
+        xaxis=dict(gridcolor="#313244"),
+        height=320, margin=dict(l=10, r=10, t=40, b=40),
+    )
+    st.plotly_chart(fig_hr, use_container_width=True)
+
+    st.markdown('<div class="section-title">Cupons Utilizados</div>', unsafe_allow_html=True)
+    coupons = full_cur.get("coupons", [])
+    if coupons:
+        rows = []
+        for cp in coupons:
+            rows.append({
+                "Cupom": cp["coupon"],
+                "Usos": cp["uses"],
+                "Desconto Total": cp["total_discount"],
+                "Receita Gerada": cp["total_revenue"],
+                "Ticket Médio": cp["avg_ticket"],
+                "% Receita": cp["pct_revenue"],
+            })
+        st.dataframe(
+            pd.DataFrame(rows),
+            column_config={
+                "Usos": st.column_config.NumberColumn("Usos", format="%d"),
+                "Desconto Total": st.column_config.NumberColumn("Desconto Total", format="R$ %.2f"),
+                "Receita Gerada": st.column_config.NumberColumn("Receita Gerada", format="R$ %.2f"),
+                "Ticket Médio": st.column_config.NumberColumn("Ticket Médio", format="R$ %.2f"),
+                "% Receita": st.column_config.NumberColumn("% Receita", format="%.1f%%"),
+            },
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("Nenhum cupom utilizado no período selecionado.")
+
+
 def check_auth():
     if st.session_state.get("authenticated"):
         return True
@@ -492,7 +802,7 @@ def main():
     # --- Load data ---
     with st.spinner("Carregando dados das APIs…"):
         try:
-            shopify_cur, shopify_prev, gads_cur, gads_prev = load_data(
+            shopify_cur, shopify_prev, gads_cur, gads_prev, full_cur, full_prev = load_data(
                 cur_start.isoformat(),
                 cur_end.isoformat(),
                 prev_start.isoformat(),
@@ -621,6 +931,9 @@ def main():
 
     # --- Dados Geográficos ---
     render_geo_tables(shopify_cur, shopify_prev)
+
+    # ── Shopify — Visão Completa ──────────────────────────────────────
+    render_shopify_full_section(full_cur, full_prev)
 
     # --- Análise Claude ---
     st.markdown('<div class="section-title">Análise e Recomendações — Claude AI</div>', unsafe_allow_html=True)
