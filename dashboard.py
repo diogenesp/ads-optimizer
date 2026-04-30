@@ -15,7 +15,16 @@ load_dotenv()
 
 REPORT_FILE = "relatorio_smartgr.md"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-CACHE_VERSION = "v5"  # bump to bust stale cache after schema changes
+def _compute_cache_version() -> str:
+    import hashlib
+    files = [shopify.__file__, gads.__file__, __file__]
+    h = hashlib.md5()
+    for f in files:
+        if f:
+            h.update(str(os.path.getmtime(f)).encode())
+    return h.hexdigest()[:8]
+
+CACHE_VERSION = _compute_cache_version()
 PRESETS = [
     "Ontem",
     "Este mês",
@@ -325,7 +334,6 @@ def products_dataframe(shopify_cur, shopify_prev):
 def generate_claude_analysis(shopify_cur, shopify_prev, gads_cur, gads_prev):
     import analyze
     data_report = analyze.build_report_data(shopify_cur, shopify_prev, gads_cur, gads_prev)
-    prompt = analyze.build_prompt(data_report)
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     full = ""
@@ -338,7 +346,7 @@ def generate_claude_analysis(shopify_cur, shopify_prev, gads_cur, gads_prev):
             "text": "Você é um especialista em performance de Google Ads e e-commerce para o mercado brasileiro. Produza análises precisas, baseadas em dados, em português.",
             "cache_control": {"type": "ephemeral"},
         }],
-        messages=[{"role": "user", "content": prompt}],
+        messages=analyze.build_messages(data_report),
     ) as stream:
         for text in stream.text_stream:
             full += text
@@ -907,39 +915,40 @@ def main():
     st.markdown('<div class="big-section">📣 Google Ads — Performance de Mídia</div>', unsafe_allow_html=True)
 
     # --- KPI Cards ---
-    st.markdown('<div class="section-title">Métricas Principais — Receita Atribuída (Shopify / Último Clique Não Direto)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Métricas Principais — Google Ads (Dados da Plataforma)</div>', unsafe_allow_html=True)
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         metric_card(
-            "Receita Google Ads",
-            shopify_cur["google_revenue"],
-            pct(shopify_cur["google_revenue"], shopify_prev["google_revenue"]),
-            delta_ya=pct(shopify_cur["google_revenue"], shopify_ya["google_revenue"]) if shopify_ya else None,
+            "Receita Atribuída (GA)",
+            gads_cur["revenue"],
+            pct(gads_cur["revenue"], gads_prev["revenue"]),
+            delta_ya=pct(gads_cur["revenue"], gads_ya["revenue"]) if gads_ya else None,
         )
     with c2:
         metric_card(
-            "ROAS Real (Shopify / GA)",
-            roas_real_cur,
-            pct(roas_real_cur, roas_real_prev),
+            "ROAS (GA)",
+            gads_cur["roas"],
+            pct(gads_cur["roas"], gads_prev["roas"]),
             prefix="", fmt=".2f",
-            delta_ya=pct(roas_real_cur, roas_real_ya) if roas_real_ya else None,
+            delta_ya=pct(gads_cur["roas"], gads_ya["roas"]) if gads_ya else None,
         )
-        st.caption(f"ROAS reportado Google Ads: {gads_cur['roas']:.2f}x")
+        st.caption(f"ROAS real (Shopify / GA): {roas_real_cur:.2f}x")
     with c3:
         metric_card(
-            "Pedidos Google Ads",
-            shopify_cur["google_orders"],
-            pct(shopify_cur["google_orders"], shopify_prev["google_orders"]),
-            prefix="", fmt=",d",
-            delta_ya=pct(shopify_cur["google_orders"], shopify_ya["google_orders"]) if shopify_ya else None,
+            "Conversões (GA)",
+            gads_cur["conversions"],
+            pct(gads_cur["conversions"], gads_prev["conversions"]),
+            prefix="", fmt=".1f",
+            delta_ya=pct(gads_cur["conversions"], gads_ya["conversions"]) if gads_ya else None,
         )
     with c4:
         metric_card(
-            "Ticket Médio",
-            shopify_cur["google_ticket"],
-            pct(shopify_cur["google_ticket"], shopify_prev["google_ticket"]),
-            delta_ya=pct(shopify_cur["google_ticket"], shopify_ya["google_ticket"]) if shopify_ya else None,
+            "CPA",
+            gads_cur["cpa"],
+            pct(gads_cur["cpa"], gads_prev["cpa"]),
+            inverse=True,
+            delta_ya=pct(gads_cur["cpa"], gads_ya["cpa"]) if gads_ya else None,
         )
 
     # --- KPIs secundários ---

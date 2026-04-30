@@ -117,12 +117,7 @@ def build_report_data(shopify_cur, shopify_prev, gads_cur, gads_prev):
     return "\n".join(lines)
 
 
-def build_prompt(data_report):
-    return f"""Você é um especialista em Google Ads e e-commerce para o mercado brasileiro. Analise os dados de performance da Smart GR (empresa de produtos para estética médica e microagulhamento) e produza um relatório completo em português.
-
-{data_report}
-
----
+_STATIC_INSTRUCTIONS = """Você é um especialista em Google Ads e e-commerce para o mercado brasileiro. Analise os dados de performance da Smart GR (empresa de produtos para estética médica e microagulhamento) fornecidos a seguir e produza um relatório executivo completo em português.
 
 Produza um relatório executivo em markdown com as seguintes seções obrigatórias:
 
@@ -147,7 +142,35 @@ Lista numerada, cada ação com: o quê fazer, onde (campanha/produto específic
 ## Alertas de Atenção
 Liste métricas com queda significativa (>15%), CPA acima do esperado, CTR baixo, campanhas sem veiculação ou qualquer anomalia relevante.
 
-Seja direto, use dados reais do relatório e evite generalismos."""
+Seja direto, use dados reais do relatório e evite generalismos.
+
+---
+
+Dados de performance:"""
+
+
+def build_messages(data_report: str) -> list:
+    """Returns a messages list with prompt caching on the static instructions block.
+
+    The static instructions block (~400 tokens) is cached with ephemeral TTL (5 min),
+    so repeated calls within that window only bill for the dynamic data tokens.
+    """
+    return [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": _STATIC_INSTRUCTIONS,
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {
+                    "type": "text",
+                    "text": data_report,
+                },
+            ],
+        }
+    ]
 
 
 def main():
@@ -172,7 +195,6 @@ def main():
 
     print("Montando relatório de dados...\n")
     data_report = build_report_data(shopify_cur, shopify_prev, gads_cur, gads_prev)
-    prompt = build_prompt(data_report)
 
     print("Enviando para Claude para análise...\n")
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -188,7 +210,7 @@ def main():
                 "cache_control": {"type": "ephemeral"},
             }
         ],
-        messages=[{"role": "user", "content": prompt}],
+        messages=build_messages(data_report),
     ) as stream:
         for text in stream.text_stream:
             print(text, end="", flush=True)

@@ -8,7 +8,7 @@ load_dotenv()
 
 SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN")
 STORE_URL = "https://smart-gr-pro.myshopify.com"
-API_VERSION = "2024-01"
+API_VERSION = "2025-01"
 BASE_URL = f"{STORE_URL}/admin/api/{API_VERSION}"
 
 HEADERS = {
