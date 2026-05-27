@@ -191,7 +191,7 @@ def product_stats(orders, top_n=20):
             price = float(item.get("price", 0)) * qty
             sales[title]["quantity"] += qty
             sales[title]["revenue"] += price
-    ranked = sorted(sales.items(), key=lambda x: x[1]["quantity"], reverse=True)
+    ranked = sorted(sales.items(), key=lambda x: x[1]["revenue"], reverse=True)
     return ranked[:top_n]
 
 

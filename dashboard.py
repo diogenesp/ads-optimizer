@@ -1030,12 +1030,20 @@ def main():
     # --- Top 20 produtos ---
     st.markdown('<div class="section-title">Top 20 Produtos — Google Ads (Período Atual)</div>', unsafe_allow_html=True)
     df_prod = products_dataframe(shopify_cur, shopify_prev)
-    df_prod["Receita"] = df_prod["Receita"].apply(lambda v: f"R$ {v:,.2f}")
-    df_prod["Ticket Médio"] = df_prod["Ticket Médio"].apply(lambda v: f"R$ {v:,.2f}")
     df_prod["Var. Qtd"] = df_prod["Var. Qtd"].apply(
         lambda v: f"+{v:.1f}%" if v is not None and v >= 0 else (f"{v:.1f}%" if v is not None else "—")
     )
-    st.dataframe(df_prod, use_container_width=True, hide_index=True)
+    st.dataframe(
+        df_prod,
+        column_config={
+            "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+            "Qtd": st.column_config.NumberColumn("Qtd", format="%d"),
+            "Receita": st.column_config.NumberColumn("Receita", format="R$ %.2f"),
+            "Ticket Médio": st.column_config.NumberColumn("Ticket Médio", format="R$ %.2f"),
+        },
+        use_container_width=True,
+        hide_index=True,
+    )
 
     # --- Dados Geográficos ---
     render_geo_tables(shopify_cur, shopify_prev, shopify_ya=shopify_ya)
