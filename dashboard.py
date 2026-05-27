@@ -1030,6 +1030,8 @@ def main():
     # --- Top 20 produtos ---
     st.markdown('<div class="section-title">Top 20 Produtos — Google Ads (Período Atual)</div>', unsafe_allow_html=True)
     df_prod = products_dataframe(shopify_cur, shopify_prev)
+    df_prod = df_prod.sort_values("Receita", ascending=False).reset_index(drop=True)
+    df_prod["#"] = range(1, len(df_prod) + 1)
     df_prod["Var. Qtd"] = df_prod["Var. Qtd"].apply(
         lambda v: f"+{v:.1f}%" if v is not None and v >= 0 else (f"{v:.1f}%" if v is not None else "—")
     )
