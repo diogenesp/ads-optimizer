@@ -383,8 +383,7 @@ def render_channel_table(channels_cur, channels_prev, channels_ya=None):
             row["_var_ya"] = pct(ch["orders"], ya.get("orders")) if ya else None
         rows.append(row)
     df = pd.DataFrame(rows)
-    df["Vendas (R$)"] = df["Vendas (R$)"].apply(lambda v: f"R$ {v:,.2f}")
-    df["AOV"] = df["AOV"].apply(lambda v: f"R$ {v:,.2f}")
+    df = df.sort_values("Vendas (R$)", ascending=False).reset_index(drop=True)
     df["% das Vendas"] = df["% das Vendas"].apply(lambda v: f"{v:.1f}%")
     df["Var. Pedidos"] = df["_var"].apply(
         lambda v: f"+{v:.1f}%" if v is not None and v >= 0 else (f"{v:.1f}%" if v is not None else "—")
@@ -395,7 +394,14 @@ def render_channel_table(channels_cur, channels_prev, channels_ya=None):
             lambda v: f"+{v:.1f}%" if v is not None and v >= 0 else (f"{v:.1f}%" if v is not None else "—")
         )
         df.drop(columns=["_var_ya"], inplace=True)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    col_cfg = {
+        "Pedidos": st.column_config.NumberColumn("Pedidos", format="%d"),
+        "Vendas (R$)": st.column_config.NumberColumn("Vendas (R$)", format="R$ %.2f"),
+        "AOV": st.column_config.NumberColumn("AOV", format="R$ %.2f"),
+        "Novos Clientes": st.column_config.NumberColumn("Novos Clientes", format="%d"),
+        "Recorrentes": st.column_config.NumberColumn("Recorrentes", format="%d"),
+    }
+    st.dataframe(df, column_config=col_cfg, use_container_width=True, hide_index=True)
 
 
 def _var_str(v):
