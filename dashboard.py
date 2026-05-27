@@ -418,6 +418,13 @@ def render_geo_tables(shopify_cur, shopify_prev, shopify_ya=None):
     cities_prev = {(c["city"], c["state_code"]): c for c in shopify_prev.get("geo_cities", [])}
     cities_ya = {(c["city"], c["state_code"]): c for c in (shopify_ya or {}).get("geo_cities", [])}
 
+    _geo_col_cfg = {
+        "Pedidos": st.column_config.NumberColumn("Pedidos", format="%d"),
+        "Receita Google Ads": st.column_config.NumberColumn("Receita Google Ads", format="R$ %.2f"),
+        "Ticket Médio": st.column_config.NumberColumn("Ticket Médio", format="R$ %.2f"),
+        "% do Total": st.column_config.NumberColumn("% do Total", format="%.1f%%"),
+    }
+
     st.markdown('<div class="section-title">Top 10 Estados — Pedidos Google Ads</div>', unsafe_allow_html=True)
     if states_cur:
         rows = []
@@ -436,7 +443,8 @@ def render_geo_tables(shopify_cur, shopify_prev, shopify_ya=None):
             if shopify_ya is not None:
                 row["Var% Ano Ant."] = _var_str(pct(s["orders"], ya.get("orders")) if ya else None)
             rows.append(row)
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        df_states = pd.DataFrame(rows).sort_values("Receita Google Ads", ascending=False).reset_index(drop=True)
+        st.dataframe(df_states, column_config=_geo_col_cfg, use_container_width=True, hide_index=True)
     else:
         st.info("Nenhum dado geográfico disponível para o período selecionado.")
 
@@ -458,7 +466,8 @@ def render_geo_tables(shopify_cur, shopify_prev, shopify_ya=None):
             if shopify_ya is not None:
                 row["Var% Ano Ant."] = _var_str(pct(c["orders"], ya.get("orders")) if ya else None)
             rows.append(row)
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        df_cities = pd.DataFrame(rows).sort_values("Receita Google Ads", ascending=False).reset_index(drop=True)
+        st.dataframe(df_cities, column_config=_geo_col_cfg, use_container_width=True, hide_index=True)
     else:
         st.info("Nenhum dado geográfico disponível para o período selecionado.")
 
@@ -1004,18 +1013,22 @@ def main():
         })
 
     df_camps = pd.DataFrame(camp_rows)
-    df_camps["Gasto (R$)"] = df_camps["Gasto (R$)"].apply(lambda v: f"R$ {v:,.2f}")
-    df_camps["Receita (R$)"] = df_camps["Receita (R$)"].apply(lambda v: f"R$ {v:,.2f}")
-    df_camps["ROAS"] = df_camps["ROAS"].apply(lambda v: f"{v:.2f}x")
     df_camps["Var. ROAS"] = df_camps["Var. ROAS"].apply(
         lambda v: f"+{v:.1f}%" if v and v >= 0 else (f"{v:.1f}%" if v else "—")
     )
-    df_camps["Conversões"] = df_camps["Conversões"].apply(lambda v: f"{v:.1f}")
-    df_camps["CPA (R$)"] = df_camps["CPA (R$)"].apply(
-        lambda v: f"R$ {v:,.2f}" if v else "—"
+    st.dataframe(
+        df_camps,
+        column_config={
+            "Gasto (R$)": st.column_config.NumberColumn("Gasto (R$)", format="R$ %.2f"),
+            "Receita (R$)": st.column_config.NumberColumn("Receita (R$)", format="R$ %.2f"),
+            "ROAS": st.column_config.NumberColumn("ROAS", format="%.2fx"),
+            "Conversões": st.column_config.NumberColumn("Conversões", format="%.1f"),
+            "CPA (R$)": st.column_config.NumberColumn("CPA (R$)", format="R$ %.2f"),
+            "CTR (%)": st.column_config.NumberColumn("CTR (%)", format="%.2f%%"),
+        },
+        use_container_width=True,
+        hide_index=True,
     )
-    df_camps["CTR (%)"] = df_camps["CTR (%)"].apply(lambda v: f"{v:.2f}%")
-    st.dataframe(df_camps, use_container_width=True, hide_index=True)
 
     # ── Shopify — Performance de E-commerce ──────────────────────────
     st.markdown('<div class="big-section big-section-shopify">🛍️ Shopify — Performance de E-commerce</div>', unsafe_allow_html=True)
