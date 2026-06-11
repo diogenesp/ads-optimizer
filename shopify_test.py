@@ -65,24 +65,6 @@ def get_channel_analytics(start_dt: datetime, end_dt: datetime) -> list | None:
     since = start_dt.strftime("%Y-%m-%d")
     until = end_dt.strftime("%Y-%m-%d")
 
-    try:
-        sessions_rows = fetch_shopifyql(f"""
-            FROM sessions
-            SHOW sessions, orders, conversion_rate
-            GROUP BY referrer_source, referrer_type
-            SINCE '{since}' UNTIL '{until}'
-            ORDER BY sessions DESC
-        """)
-
-        sales_rows = fetch_shopifyql(f"""
-            FROM sales
-            SHOW gross_sales, orders, average_order_value
-            GROUP BY referrer_source
-            SINCE '{since}' UNTIL '{until}'
-        """)
-    except Exception:
-        return None
-
     def _int(v):
         try: return int(float(v or 0))
         except (TypeError, ValueError): return 0
@@ -91,27 +73,47 @@ def get_channel_analytics(start_dt: datetime, end_dt: datetime) -> list | None:
         try: return float(v or 0)
         except (TypeError, ValueError): return 0.0
 
+    try:
+        sessions_rows = fetch_shopifyql(f"""
+            FROM sessions
+            SHOW sessions, orders, conversion_rate
+            GROUP BY referrer_source
+            SINCE '{since}' UNTIL '{until}'
+            ORDER BY sessions DESC
+        """)
+    except Exception:
+        return None
+
+    try:
+        sales_rows = fetch_shopifyql(f"""
+            FROM sales
+            SHOW gross_sales, net_sales, orders
+            GROUP BY referrer_source
+            SINCE '{since}' UNTIL '{until}'
+        """)
+    except Exception:
+        sales_rows = []
+
     sales_map = {(r.get("referrer_source") or "").lower(): r for r in sales_rows}
     total_revenue = sum(_float(r.get("gross_sales")) for r in sales_rows)
 
     channels = []
     for row in sessions_rows:
         source = row.get("referrer_source") or "Desconhecido"
-        tipo = row.get("referrer_type") or "unknown"
         sales = sales_map.get(source.lower(), {})
         revenue = _float(sales.get("gross_sales"))
         orders = _int(row.get("orders"))
+        aov = revenue / orders if orders else 0.0
 
         channels.append({
             "canal": source,
-            "tipo": tipo,
+            "tipo": "—",
             "sessions": _int(row.get("sessions")),
             "orders": orders,
             "conversion_rate": _float(row.get("conversion_rate")) * 100,
             "revenue": revenue,
-            "aov": _float(sales.get("average_order_value")),
+            "aov": aov,
             "pct_revenue": revenue / total_revenue * 100 if total_revenue else 0.0,
-            # Paid channel metrics — preenchidos pelo dashboard para o canal Google pago
             "cost": None,
             "roas": None,
             "cpa": None,
