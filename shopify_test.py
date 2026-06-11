@@ -220,6 +220,87 @@ def get_period_data(start_dt, end_dt):
     }
 
 
+def fetch_checkouts(start_dt, end_dt) -> list:
+    """Fetch abandoned checkouts (status=open = not converted to order)."""
+    checkouts = []
+    url = f"{BASE_URL}/checkouts.json"
+    params = {
+        "status": "open",
+        "created_at_min": start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "created_at_max": end_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "limit": 250,
+    }
+    while url:
+        response = requests.get(url, headers=HEADERS, params=params)
+        response.raise_for_status()
+        data = response.json()
+        checkouts.extend(data.get("checkouts", []))
+        link_header = response.headers.get("Link", "")
+        next_url = None
+        for part in link_header.split(","):
+            part = part.strip()
+            if 'rel="next"' in part:
+                next_url = part.split(";")[0].strip().strip("<>")
+                break
+        url = next_url
+        params = {}
+    return checkouts
+
+
+def _abandoned_cart_products(checkouts: list, top_n: int = 20) -> list:
+    """Top products found in abandoned carts by frequency."""
+    counts: dict = defaultdict(lambda: {"quantity": 0, "potential_revenue": 0.0})
+    for checkout in checkouts:
+        for item in checkout.get("line_items", []):
+            title = (item.get("title") or "Unknown").strip()
+            qty = int(item.get("quantity") or 1)
+            price = float(item.get("price") or 0) * qty
+            counts[title]["quantity"] += qty
+            counts[title]["potential_revenue"] += price
+    ranked = sorted(counts.items(), key=lambda x: x[1]["quantity"], reverse=True)
+    return [{"product": name, **data} for name, data in ranked[:top_n]]
+
+
+def abandoned_cart_stats(checkouts: list, completed_orders: int = 0) -> dict:
+    """Aggregate stats for a list of abandoned checkouts."""
+    if not checkouts:
+        return {
+            "count": 0, "potential_revenue": 0.0, "avg_cart_value": 0.0,
+            "abandonment_rate": 0.0, "new_customers": 0, "returning_customers": 0,
+            "top_products": [],
+        }
+    total_value = sum(float(c.get("total_price") or 0) for c in checkouts)
+    total_checkouts = len(checkouts) + completed_orders
+    new_c = sum(1 for c in checkouts if not (c.get("customer") or {}).get("orders_count"))
+    return {
+        "count": len(checkouts),
+        "potential_revenue": total_value,
+        "avg_cart_value": total_value / len(checkouts),
+        "abandonment_rate": len(checkouts) / total_checkouts * 100 if total_checkouts else 0.0,
+        "new_customers": new_c,
+        "returning_customers": len(checkouts) - new_c,
+        "top_products": _abandoned_cart_products(checkouts),
+    }
+
+
+def get_abandoned_cart_data(start_dt, end_dt, completed_orders_all: int = 0,
+                            completed_orders_google: int = 0) -> dict:
+    """
+    Returns abandoned cart stats for all channels and Google Ads channel separately.
+    Uses the same is_google_ads attribution as orders.
+    """
+    try:
+        checkouts = fetch_checkouts(start_dt, end_dt)
+    except Exception:
+        return {"all": None, "google": None}
+
+    google_checkouts = [c for c in checkouts if is_google_ads(c)]
+    return {
+        "all": abandoned_cart_stats(checkouts, completed_orders=completed_orders_all),
+        "google": abandoned_cart_stats(google_checkouts, completed_orders=completed_orders_google),
+    }
+
+
 def fetch_orders_any_status(start_dt, end_dt):
     """Fetch all orders regardless of financial or fulfillment status."""
     orders = []

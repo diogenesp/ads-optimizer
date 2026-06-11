@@ -218,7 +218,17 @@ def load_data(cur_start_iso: str, cur_end_iso: str, prev_start_iso: str, prev_en
     )
     full_cur = shopify.get_full_period_data(cur_start, cur_end)
     full_prev = shopify.get_full_period_data(prev_start, prev_end)
-    return shopify_cur, shopify_prev, gads_cur, gads_prev, full_cur, full_prev
+    abandoned_cur = shopify.get_abandoned_cart_data(
+        cur_start, cur_end,
+        completed_orders_all=full_cur["total_orders"],
+        completed_orders_google=shopify_cur["google_orders"],
+    )
+    abandoned_prev = shopify.get_abandoned_cart_data(
+        prev_start, prev_end,
+        completed_orders_all=full_prev["total_orders"],
+        completed_orders_google=shopify_prev["google_orders"],
+    )
+    return shopify_cur, shopify_prev, gads_cur, gads_prev, full_cur, full_prev, abandoned_cur, abandoned_prev
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -1098,7 +1108,7 @@ def main():
     # --- Load data ---
     with st.spinner("Carregando dados das APIs…"):
         try:
-            shopify_cur, shopify_prev, gads_cur, gads_prev, full_cur, full_prev = load_data(
+            shopify_cur, shopify_prev, gads_cur, gads_prev, full_cur, full_prev, abandoned_cur, abandoned_prev = load_data(
                 cur_start.isoformat(),
                 cur_end.isoformat(),
                 prev_start.isoformat(),
@@ -1238,6 +1248,63 @@ def main():
         shopify_prev.get("channels", []),
         channels_ya=shopify_ya.get("channels", []) if shopify_ya else None,
     )
+
+    # ── Carrinhos Abandonados ─────────────────────────────────────────
+    st.markdown('<div class="section-title">🛒 Carrinhos Abandonados</div>', unsafe_allow_html=True)
+
+    def _render_abandoned(ab, ab_prev, title):
+        if ab is None:
+            st.warning("Não foi possível carregar dados de carrinhos abandonados.")
+            return
+        if ab["count"] == 0:
+            st.info(f"Nenhum carrinho abandonado encontrado no período — {title}.")
+            return
+
+        ab_p = ab_prev or {}
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            metric_card("Carrinhos Abandonados", ab["count"],
+                        pct(ab["count"], ab_p.get("count")),
+                        prefix="", fmt=",d", inverse=True)
+        with c2:
+            metric_card("Receita Potencial Perdida", ab["potential_revenue"],
+                        pct(ab["potential_revenue"], ab_p.get("potential_revenue")),
+                        inverse=True)
+        with c3:
+            metric_card("Ticket Médio Abandonado", ab["avg_cart_value"],
+                        pct(ab["avg_cart_value"], ab_p.get("avg_cart_value")))
+        with c4:
+            metric_card("Taxa de Abandono", ab["abandonment_rate"],
+                        pct(ab["abandonment_rate"], ab_p.get("abandonment_rate")),
+                        prefix="", fmt=".1f", suffix="%", inverse=True)
+
+        if ab["top_products"]:
+            st.markdown(f"**Top Produtos nos Carrinhos Abandonados — {title}**")
+            df_ab = pd.DataFrame(ab["top_products"])
+            st.dataframe(
+                df_ab.rename(columns={
+                    "product": "Produto",
+                    "quantity": "Qtd Abandonada",
+                    "potential_revenue": "Receita Potencial (R$)",
+                }),
+                column_config={
+                    "Qtd Abandonada": st.column_config.NumberColumn("Qtd Abandonada", format="%d"),
+                    "Receita Potencial (R$)": st.column_config.NumberColumn("Receita Potencial (R$)", format="R$ %.2f"),
+                },
+                use_container_width=True, hide_index=True,
+            )
+
+    tab_all, tab_gads = st.tabs(["🌐 Todos os Canais", "🎯 Google Ads"])
+    with tab_all:
+        _render_abandoned(
+            abandoned_cur.get("all"), abandoned_prev.get("all"),
+            "Todos os Canais",
+        )
+    with tab_gads:
+        _render_abandoned(
+            abandoned_cur.get("google"), abandoned_prev.get("google"),
+            "Google Ads",
+        )
 
     # --- Top 20 produtos ---
     st.markdown('<div class="section-title">Top 20 Produtos — Google Ads (Período Atual)</div>', unsafe_allow_html=True)
