@@ -56,6 +56,71 @@ def fetch_shopifyql(query: str) -> list:
     return [dict(zip(columns, row)) for row in table.get("rowData", [])]
 
 
+def get_channel_analytics(start_dt: datetime, end_dt: datetime) -> list | None:
+    """
+    Full channel breakdown via ShopifyQL (Shopify Plus only).
+    Merges session metrics (FROM sessions) with revenue metrics (FROM sales).
+    Returns list sorted by revenue desc, or None on failure.
+    """
+    since = start_dt.strftime("%Y-%m-%d")
+    until = end_dt.strftime("%Y-%m-%d")
+
+    try:
+        sessions_rows = fetch_shopifyql(f"""
+            FROM sessions
+            SHOW sessions, orders, conversion_rate
+            GROUP BY referrer_source, referrer_type
+            SINCE '{since}' UNTIL '{until}'
+            ORDER BY sessions DESC
+        """)
+
+        sales_rows = fetch_shopifyql(f"""
+            FROM sales
+            SHOW gross_sales, orders, average_order_value
+            GROUP BY referrer_source
+            SINCE '{since}' UNTIL '{until}'
+        """)
+    except Exception:
+        return None
+
+    def _int(v):
+        try: return int(float(v or 0))
+        except (TypeError, ValueError): return 0
+
+    def _float(v):
+        try: return float(v or 0)
+        except (TypeError, ValueError): return 0.0
+
+    sales_map = {(r.get("referrer_source") or "").lower(): r for r in sales_rows}
+    total_revenue = sum(_float(r.get("gross_sales")) for r in sales_rows)
+
+    channels = []
+    for row in sessions_rows:
+        source = row.get("referrer_source") or "Desconhecido"
+        tipo = row.get("referrer_type") or "unknown"
+        sales = sales_map.get(source.lower(), {})
+        revenue = _float(sales.get("gross_sales"))
+        orders = _int(row.get("orders"))
+
+        channels.append({
+            "canal": source,
+            "tipo": tipo,
+            "sessions": _int(row.get("sessions")),
+            "orders": orders,
+            "conversion_rate": _float(row.get("conversion_rate")) * 100,
+            "revenue": revenue,
+            "aov": _float(sales.get("average_order_value")),
+            "pct_revenue": revenue / total_revenue * 100 if total_revenue else 0.0,
+            # Paid channel metrics — preenchidos pelo dashboard para o canal Google pago
+            "cost": None,
+            "roas": None,
+            "cpa": None,
+            "ctr": None,
+        })
+
+    return sorted(channels, key=lambda x: x["revenue"], reverse=True)
+
+
 def get_sessions_data(start_dt: datetime, end_dt: datetime) -> dict | None:
     """
     Fetch session analytics via ShopifyQL (Shopify Plus only).

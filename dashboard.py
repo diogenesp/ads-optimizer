@@ -208,7 +208,9 @@ def load_data(cur_start_iso: str, cur_end_iso: str, prev_start_iso: str, prev_en
     full_prev = shopify.get_full_period_data(prev_start, prev_end)
     sessions_cur = shopify.get_sessions_data(cur_start, cur_end)
     sessions_prev = shopify.get_sessions_data(prev_start, prev_end)
-    return shopify_cur, shopify_prev, gads_cur, gads_prev, full_cur, full_prev, sessions_cur, sessions_prev
+    channels_cur = shopify.get_channel_analytics(cur_start, cur_end)
+    channels_prev = shopify.get_channel_analytics(prev_start, prev_end)
+    return shopify_cur, shopify_prev, gads_cur, gads_prev, full_cur, full_prev, sessions_cur, sessions_prev, channels_cur, channels_prev
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -360,7 +362,69 @@ def generate_claude_analysis(shopify_cur, shopify_prev, gads_cur, gads_prev):
     return full, now_str
 
 
-def render_channel_table(channels_cur, channels_prev, channels_ya=None):
+def render_channel_table(channels_cur, channels_prev, channels_ya=None,
+                         shopify_channels_cur=None, shopify_channels_prev=None,
+                         gads_cur=None):
+    """Renders channel table. Uses ShopifyQL data when available (Shopify Plus),
+    with Google Ads metrics injected for the paid Google channel."""
+
+    # ── ShopifyQL path (richer data) ──────────────────────────────────
+    if shopify_channels_cur:
+        prev_map = {c["canal"].lower(): c for c in (shopify_channels_prev or [])}
+
+        # Inject Google Ads paid metrics into the "google / paid" row
+        if gads_cur:
+            for ch in shopify_channels_cur:
+                if ch["canal"].lower() == "google" and ch["tipo"] == "paid":
+                    ch["cost"] = gads_cur["cost"]
+                    ch["roas"] = gads_cur["roas"]
+                    ch["cpa"] = gads_cur["cpa"]
+                    ch["ctr"] = gads_cur["ctr"]
+                    break
+
+        rows = []
+        for ch in shopify_channels_cur:
+            prev = prev_map.get(ch["canal"].lower(), {})
+            rows.append({
+                "Canal": ch["canal"],
+                "Tipo": ch["tipo"],
+                "Sessões": ch["sessions"],
+                "Vendas (R$)": ch["revenue"],
+                "Pedidos": ch["orders"],
+                "Taxa de Conversão (%)": ch["conversion_rate"],
+                "Custo (R$)": ch["cost"],
+                "ROAS": ch["roas"],
+                "CPA (R$)": ch["cpa"],
+                "CTR (%)": ch["ctr"],
+                "AOV (R$)": ch["aov"],
+                "% das Vendas": ch["pct_revenue"],
+                "_var": pct(ch["orders"], prev.get("orders")) if prev else None,
+            })
+
+        df = pd.DataFrame(rows).sort_values("Vendas (R$)", ascending=False).reset_index(drop=True)
+        df["Var. Pedidos"] = df["_var"].apply(_var_str)
+        df.drop(columns=["_var"], inplace=True)
+
+        st.dataframe(
+            df,
+            column_config={
+                "Sessões": st.column_config.NumberColumn("Sessões", format="%d"),
+                "Vendas (R$)": st.column_config.NumberColumn("Vendas (R$)", format="R$ %.2f"),
+                "Pedidos": st.column_config.NumberColumn("Pedidos", format="%d"),
+                "Taxa de Conversão (%)": st.column_config.NumberColumn("Taxa de Conversão (%)", format="%.2f%%"),
+                "Custo (R$)": st.column_config.NumberColumn("Custo (R$)", format="R$ %.2f"),
+                "ROAS": st.column_config.NumberColumn("ROAS", format="%.2fx"),
+                "CPA (R$)": st.column_config.NumberColumn("CPA (R$)", format="R$ %.2f"),
+                "CTR (%)": st.column_config.NumberColumn("CTR (%)", format="%.2f%%"),
+                "AOV (R$)": st.column_config.NumberColumn("AOV (R$)", format="R$ %.2f"),
+                "% das Vendas": st.column_config.NumberColumn("% das Vendas", format="%.1f%%"),
+            },
+            use_container_width=True,
+            hide_index=True,
+        )
+        return
+
+    # ── Fallback: REST API classify_channel ───────────────────────────
     if not channels_cur:
         st.info("Nenhum dado de canal disponível para o período.")
         return
@@ -384,26 +448,25 @@ def render_channel_table(channels_cur, channels_prev, channels_ya=None):
         if channels_ya is not None:
             row["_var_ya"] = pct(ch["orders"], ya.get("orders")) if ya else None
         rows.append(row)
-    df = pd.DataFrame(rows)
-    df = df.sort_values("Vendas (R$)", ascending=False).reset_index(drop=True)
+    df = pd.DataFrame(rows).sort_values("Vendas (R$)", ascending=False).reset_index(drop=True)
     df["% das Vendas"] = df["% das Vendas"].apply(lambda v: f"{v:.1f}%")
-    df["Var. Pedidos"] = df["_var"].apply(
-        lambda v: f"+{v:.1f}%" if v is not None and v >= 0 else (f"{v:.1f}%" if v is not None else "—")
-    )
+    df["Var. Pedidos"] = df["_var"].apply(_var_str)
     df.drop(columns=["_var"], inplace=True)
     if "_var_ya" in df.columns:
-        df["Var% Ano Ant."] = df["_var_ya"].apply(
-            lambda v: f"+{v:.1f}%" if v is not None and v >= 0 else (f"{v:.1f}%" if v is not None else "—")
-        )
+        df["Var% Ano Ant."] = df["_var_ya"].apply(_var_str)
         df.drop(columns=["_var_ya"], inplace=True)
-    col_cfg = {
-        "Pedidos": st.column_config.NumberColumn("Pedidos", format="%d"),
-        "Vendas (R$)": st.column_config.NumberColumn("Vendas (R$)", format="R$ %.2f"),
-        "AOV": st.column_config.NumberColumn("AOV", format="R$ %.2f"),
-        "Novos Clientes": st.column_config.NumberColumn("Novos Clientes", format="%d"),
-        "Recorrentes": st.column_config.NumberColumn("Recorrentes", format="%d"),
-    }
-    st.dataframe(df, column_config=col_cfg, use_container_width=True, hide_index=True)
+    st.dataframe(
+        df,
+        column_config={
+            "Pedidos": st.column_config.NumberColumn("Pedidos", format="%d"),
+            "Vendas (R$)": st.column_config.NumberColumn("Vendas (R$)", format="R$ %.2f"),
+            "AOV": st.column_config.NumberColumn("AOV", format="R$ %.2f"),
+            "Novos Clientes": st.column_config.NumberColumn("Novos Clientes", format="%d"),
+            "Recorrentes": st.column_config.NumberColumn("Recorrentes", format="%d"),
+        },
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 def _var_str(v):
@@ -967,7 +1030,7 @@ def main():
     # --- Load data ---
     with st.spinner("Carregando dados das APIs…"):
         try:
-            shopify_cur, shopify_prev, gads_cur, gads_prev, full_cur, full_prev, sessions_cur, sessions_prev = load_data(
+            shopify_cur, shopify_prev, gads_cur, gads_prev, full_cur, full_prev, sessions_cur, sessions_prev, channels_cur, channels_prev = load_data(
                 cur_start.isoformat(),
                 cur_end.isoformat(),
                 prev_start.isoformat(),
@@ -1106,6 +1169,9 @@ def main():
         shopify_cur.get("channels", []),
         shopify_prev.get("channels", []),
         channels_ya=shopify_ya.get("channels", []) if shopify_ya else None,
+        shopify_channels_cur=channels_cur,
+        shopify_channels_prev=channels_prev,
+        gads_cur=gads_cur,
     )
 
     # --- Top 20 produtos ---
