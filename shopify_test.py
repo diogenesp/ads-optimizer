@@ -247,6 +247,29 @@ def fetch_checkouts(start_dt, end_dt) -> list:
     return checkouts
 
 
+def _checkout_funnel_stage(checkout: dict) -> str:
+    """Classify how far an abandoned checkout progressed before being abandoned."""
+    if checkout.get("gateway"):
+        return "payment"
+    if checkout.get("shipping_lines"):
+        return "shipping"
+    return "cart"
+
+
+def _abandoned_cart_funnel(checkouts: list) -> dict:
+    """Count and potential revenue of abandoned checkouts grouped by funnel stage."""
+    stages = {
+        "cart": {"label": "Carrinho (sem dados de envio/pagamento)", "count": 0, "potential_revenue": 0.0},
+        "shipping": {"label": "Frete selecionado (não pagou)", "count": 0, "potential_revenue": 0.0},
+        "payment": {"label": "Pagamento iniciado (não concluiu)", "count": 0, "potential_revenue": 0.0},
+    }
+    for checkout in checkouts:
+        stage = _checkout_funnel_stage(checkout)
+        stages[stage]["count"] += 1
+        stages[stage]["potential_revenue"] += float(checkout.get("total_price") or 0)
+    return stages
+
+
 def _abandoned_cart_products(checkouts: list, top_n: int = 20) -> list:
     """Top products found in abandoned carts by frequency."""
     counts: dict = defaultdict(lambda: {"quantity": 0, "potential_revenue": 0.0})
@@ -267,7 +290,7 @@ def abandoned_cart_stats(checkouts: list, completed_orders: int = 0) -> dict:
         return {
             "count": 0, "potential_revenue": 0.0, "avg_cart_value": 0.0,
             "abandonment_rate": 0.0, "new_customers": 0, "returning_customers": 0,
-            "top_products": [],
+            "top_products": [], "funnel": _abandoned_cart_funnel([]),
         }
     total_value = sum(float(c.get("total_price") or 0) for c in checkouts)
     total_checkouts = len(checkouts) + completed_orders
@@ -280,6 +303,7 @@ def abandoned_cart_stats(checkouts: list, completed_orders: int = 0) -> dict:
         "new_customers": new_c,
         "returning_customers": len(checkouts) - new_c,
         "top_products": _abandoned_cart_products(checkouts),
+        "funnel": _abandoned_cart_funnel(checkouts),
     }
 
 

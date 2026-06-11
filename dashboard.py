@@ -1278,6 +1278,23 @@ def main():
                         pct(ab["abandonment_rate"], ab_p.get("abandonment_rate")),
                         prefix="", fmt=".1f", suffix="%", inverse=True)
 
+        funnel = ab.get("funnel")
+        if funnel:
+            st.markdown(f"**Em que etapa o cliente abandonou — {title}**")
+            df_funnel = pd.DataFrame([
+                {"Etapa": v["label"], "Carrinhos": v["count"], "Receita Potencial (R$)": v["potential_revenue"]}
+                for v in funnel.values()
+            ])
+            st.dataframe(
+                df_funnel,
+                column_config={
+                    "Carrinhos": st.column_config.NumberColumn("Carrinhos", format="%d"),
+                    "Receita Potencial (R$)": st.column_config.NumberColumn("Receita Potencial (R$)", format="R$ %.2f"),
+                },
+                use_container_width=True, hide_index=True,
+            )
+            st.caption("Quanto mais avançada a etapa (frete/pagamento), mais perto o cliente estava de finalizar a compra.")
+
         if ab["top_products"]:
             st.markdown(f"**Top Produtos nos Carrinhos Abandonados — {title}**")
             df_ab = pd.DataFrame(ab["top_products"])
