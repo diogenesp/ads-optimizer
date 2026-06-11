@@ -206,11 +206,7 @@ def load_data(cur_start_iso: str, cur_end_iso: str, prev_start_iso: str, prev_en
     )
     full_cur = shopify.get_full_period_data(cur_start, cur_end)
     full_prev = shopify.get_full_period_data(prev_start, prev_end)
-    sessions_cur = shopify.get_sessions_data(cur_start, cur_end)
-    sessions_prev = shopify.get_sessions_data(prev_start, prev_end)
-    channels_cur = shopify.get_channel_analytics(cur_start, cur_end)
-    channels_prev = shopify.get_channel_analytics(prev_start, prev_end)
-    return shopify_cur, shopify_prev, gads_cur, gads_prev, full_cur, full_prev, sessions_cur, sessions_prev, channels_cur, channels_prev
+    return shopify_cur, shopify_prev, gads_cur, gads_prev, full_cur, full_prev
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -362,69 +358,7 @@ def generate_claude_analysis(shopify_cur, shopify_prev, gads_cur, gads_prev):
     return full, now_str
 
 
-def render_channel_table(channels_cur, channels_prev, channels_ya=None,
-                         shopify_channels_cur=None, shopify_channels_prev=None,
-                         gads_cur=None):
-    """Renders channel table. Uses ShopifyQL data when available (Shopify Plus),
-    with Google Ads metrics injected for the paid Google channel."""
-
-    # ── ShopifyQL path (richer data) ──────────────────────────────────
-    if shopify_channels_cur:
-        prev_map = {c["canal"].lower(): c for c in (shopify_channels_prev or [])}
-
-        # Inject Google Ads paid metrics into the "google / paid" row
-        if gads_cur:
-            for ch in shopify_channels_cur:
-                if ch["canal"].lower() == "google" and ch["tipo"] == "paid":
-                    ch["cost"] = gads_cur["cost"]
-                    ch["roas"] = gads_cur["roas"]
-                    ch["cpa"] = gads_cur["cpa"]
-                    ch["ctr"] = gads_cur["ctr"]
-                    break
-
-        rows = []
-        for ch in shopify_channels_cur:
-            prev = prev_map.get(ch["canal"].lower(), {})
-            rows.append({
-                "Canal": ch["canal"],
-                "Tipo": ch["tipo"],
-                "Sessões": ch["sessions"],
-                "Vendas (R$)": ch["revenue"],
-                "Pedidos": ch["orders"],
-                "Taxa de Conversão (%)": ch["conversion_rate"],
-                "Custo (R$)": ch["cost"],
-                "ROAS": ch["roas"],
-                "CPA (R$)": ch["cpa"],
-                "CTR (%)": ch["ctr"],
-                "AOV (R$)": ch["aov"],
-                "% das Vendas": ch["pct_revenue"],
-                "_var": pct(ch["orders"], prev.get("orders")) if prev else None,
-            })
-
-        df = pd.DataFrame(rows).sort_values("Vendas (R$)", ascending=False).reset_index(drop=True)
-        df["Var. Pedidos"] = df["_var"].apply(_var_str)
-        df.drop(columns=["_var"], inplace=True)
-
-        st.dataframe(
-            df,
-            column_config={
-                "Sessões": st.column_config.NumberColumn("Sessões", format="%d"),
-                "Vendas (R$)": st.column_config.NumberColumn("Vendas (R$)", format="R$ %.2f"),
-                "Pedidos": st.column_config.NumberColumn("Pedidos", format="%d"),
-                "Taxa de Conversão (%)": st.column_config.NumberColumn("Taxa de Conversão (%)", format="%.2f%%"),
-                "Custo (R$)": st.column_config.NumberColumn("Custo (R$)", format="R$ %.2f"),
-                "ROAS": st.column_config.NumberColumn("ROAS", format="%.2fx"),
-                "CPA (R$)": st.column_config.NumberColumn("CPA (R$)", format="R$ %.2f"),
-                "CTR (%)": st.column_config.NumberColumn("CTR (%)", format="%.2f%%"),
-                "AOV (R$)": st.column_config.NumberColumn("AOV (R$)", format="R$ %.2f"),
-                "% das Vendas": st.column_config.NumberColumn("% das Vendas", format="%.1f%%"),
-            },
-            use_container_width=True,
-            hide_index=True,
-        )
-        return
-
-    # ── Fallback: REST API classify_channel ───────────────────────────
+def render_channel_table(channels_cur, channels_prev, channels_ya=None):
     if not channels_cur:
         st.info("Nenhum dado de canal disponível para o período.")
         return
@@ -537,7 +471,7 @@ def render_geo_tables(shopify_cur, shopify_prev, shopify_ya=None):
         st.info("Nenhum dado geográfico disponível para o período selecionado.")
 
 
-def render_shopify_full_section(full_cur, full_prev, full_ya=None, sessions_cur=None, sessions_prev=None):
+def render_shopify_full_section(full_cur, full_prev, full_ya=None):
     st.markdown(
         '<div class="big-section" style="border-left-color: #cba6f7;">📊 Shopify — Visão Completa</div>',
         unsafe_allow_html=True,
@@ -586,71 +520,6 @@ def render_shopify_full_section(full_cur, full_prev, full_ya=None, sessions_cur=
             delta_ya=pct(full_cur["refund_count"], _ya("refund_count")),
         )
         st.caption(f"Valor: R$ {_fmt_brl(full_cur['refund_total'])}")
-
-    # ── Funil de Conversão (ShopifyQL) ────────────────────────────────
-    st.markdown('<div class="section-title">Funil de Conversão — Sessões (Shopify Plus)</div>', unsafe_allow_html=True)
-    if sessions_cur:
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            metric_card(
-                "Sessões",
-                sessions_cur["sessions"],
-                pct(sessions_cur["sessions"], sessions_prev["sessions"] if sessions_prev else None),
-                prefix="", fmt=",d",
-            )
-        with c2:
-            metric_card(
-                "Adicionaram ao Carrinho",
-                sessions_cur["added_to_cart"],
-                pct(sessions_cur["added_to_cart"], sessions_prev["added_to_cart"] if sessions_prev else None),
-                prefix="", fmt=",d",
-            )
-            if sessions_cur["sessions"]:
-                st.caption(f"{sessions_cur['added_to_cart'] / sessions_cur['sessions'] * 100:.1f}% das sessões")
-        with c3:
-            metric_card(
-                "Chegaram ao Checkout",
-                sessions_cur["reached_checkout"],
-                pct(sessions_cur["reached_checkout"], sessions_prev["reached_checkout"] if sessions_prev else None),
-                prefix="", fmt=",d",
-            )
-            if sessions_cur["sessions"]:
-                st.caption(f"{sessions_cur['reached_checkout'] / sessions_cur['sessions'] * 100:.1f}% das sessões")
-        with c4:
-            metric_card(
-                "Taxa de Conversão",
-                sessions_cur["conversion_rate"],
-                pct(sessions_cur["conversion_rate"], sessions_prev["conversion_rate"] if sessions_prev else None),
-                prefix="", fmt=".2f", suffix="%",
-            )
-
-        # Tabela por canal
-        if sessions_cur.get("by_channel"):
-            st.markdown('<div class="section-title">Conversão por Canal</div>', unsafe_allow_html=True)
-            ch_rows = []
-            prev_ch_map = {r["source"]: r for r in (sessions_prev or {}).get("by_channel", [])}
-            for ch in sessions_cur["by_channel"]:
-                prev_ch = prev_ch_map.get(ch["source"], {})
-                ch_rows.append({
-                    "Canal": ch["source"],
-                    "Sessões": ch["sessions"],
-                    "Pedidos": ch["orders"],
-                    "Taxa de Conversão (%)": ch["conversion_rate"],
-                    "Var. Conversão": _var_str(pct(ch["conversion_rate"], prev_ch.get("conversion_rate"))),
-                })
-            df_ch = pd.DataFrame(ch_rows).sort_values("Sessões", ascending=False).reset_index(drop=True)
-            st.dataframe(
-                df_ch,
-                column_config={
-                    "Sessões": st.column_config.NumberColumn("Sessões", format="%d"),
-                    "Pedidos": st.column_config.NumberColumn("Pedidos", format="%d"),
-                    "Taxa de Conversão (%)": st.column_config.NumberColumn("Taxa de Conversão (%)", format="%.2f%%"),
-                },
-                use_container_width=True,
-                hide_index=True,
-            )
-    else:
-        st.info("Dados de sessão não disponíveis. Verifique se a loja está no plano Shopify Plus.")
 
     # ── 2. CLIENTES ────────────────────────────────────────────────────
     st.markdown('<div class="section-title">2. Clientes</div>', unsafe_allow_html=True)
@@ -1030,7 +899,7 @@ def main():
     # --- Load data ---
     with st.spinner("Carregando dados das APIs…"):
         try:
-            shopify_cur, shopify_prev, gads_cur, gads_prev, full_cur, full_prev, sessions_cur, sessions_prev, channels_cur, channels_prev = load_data(
+            shopify_cur, shopify_prev, gads_cur, gads_prev, full_cur, full_prev = load_data(
                 cur_start.isoformat(),
                 cur_end.isoformat(),
                 prev_start.isoformat(),
@@ -1046,13 +915,6 @@ def main():
         except Exception as e:
             st.error(f"Erro ao carregar dados: {e}")
             st.stop()
-
-    # Diagnóstico ShopifyQL — mostra erro se arquivo de debug existir
-    if os.path.exists("shopifyql_debug.json") and (not channels_cur or not sessions_cur):
-        with open("shopifyql_debug.json", encoding="utf-8") as _dbf:
-            _dbg = _dbf.read()
-        with st.expander("⚠️ Diagnóstico ShopifyQL — clique para ver o erro", expanded=True):
-            st.code(_dbg, language="json")
 
     roas_real_cur = shopify_cur["google_revenue"] / gads_cur["cost"] if gads_cur["cost"] else 0
     roas_real_prev = shopify_prev["google_revenue"] / gads_prev["cost"] if gads_prev["cost"] else 0
@@ -1176,9 +1038,6 @@ def main():
         shopify_cur.get("channels", []),
         shopify_prev.get("channels", []),
         channels_ya=shopify_ya.get("channels", []) if shopify_ya else None,
-        shopify_channels_cur=channels_cur,
-        shopify_channels_prev=channels_prev,
-        gads_cur=gads_cur,
     )
 
     # --- Top 20 produtos ---
@@ -1205,7 +1064,7 @@ def main():
     render_geo_tables(shopify_cur, shopify_prev, shopify_ya=shopify_ya)
 
     # ── Shopify — Visão Completa ──────────────────────────────────────
-    render_shopify_full_section(full_cur, full_prev, full_ya=full_ya, sessions_cur=sessions_cur, sessions_prev=sessions_prev)
+    render_shopify_full_section(full_cur, full_prev, full_ya=full_ya)
 
     # --- Análise Claude ---
     st.markdown('<div class="section-title">Análise e Recomendações — Claude AI</div>', unsafe_allow_html=True)
