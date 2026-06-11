@@ -35,6 +35,8 @@ mutation shopifyqlQuery($query: String!) {
 
 def fetch_shopifyql(query: str) -> list:
     """Execute a ShopifyQL query and return rows as list of dicts. Requires Shopify Plus."""
+    import json as _json
+
     response = requests.post(
         GRAPHQL_URL,
         headers=HEADERS,
@@ -43,13 +45,20 @@ def fetch_shopifyql(query: str) -> list:
     response.raise_for_status()
     data = response.json()
 
-    result = data.get("data", {}).get("shopifyqlQuery", {})
-    parse_errors = result.get("parseErrors", [])
+    # Top-level GraphQL errors (auth, permissions, etc.)
+    if "errors" in data:
+        raise ValueError(f"GraphQL error: {data['errors']}")
+
+    result = (data.get("data") or {}).get("shopifyqlQuery") or {}
+    parse_errors = result.get("parseErrors") or []
     if parse_errors:
-        raise ValueError(f"ShopifyQL error: {parse_errors}")
+        raise ValueError(f"ShopifyQL parse error: {parse_errors}")
 
     table = result.get("tableData")
     if not table:
+        # Dump raw response so we can diagnose the issue
+        with open("shopifyql_debug.json", "w", encoding="utf-8") as _f:
+            _json.dump({"query": query, "response": data}, _f, indent=2, ensure_ascii=False)
         return []
 
     columns = [c["name"] for c in table.get("columns", [])]

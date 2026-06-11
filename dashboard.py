@@ -1047,6 +1047,13 @@ def main():
             st.error(f"Erro ao carregar dados: {e}")
             st.stop()
 
+    # Diagnóstico ShopifyQL — mostra erro se arquivo de debug existir
+    if os.path.exists("shopifyql_debug.json") and not channels_cur:
+        with open("shopifyql_debug.json", encoding="utf-8") as _dbf:
+            _dbg = _dbf.read()
+        with st.expander("⚠️ Diagnóstico ShopifyQL (canais sem dados)", expanded=False):
+            st.code(_dbg, language="json")
+
     roas_real_cur = shopify_cur["google_revenue"] / gads_cur["cost"] if gads_cur["cost"] else 0
     roas_real_prev = shopify_prev["google_revenue"] / gads_prev["cost"] if gads_prev["cost"] else 0
     roas_real_ya = (shopify_ya["google_revenue"] / gads_ya["cost"] if gads_ya and gads_ya["cost"] else None) if show_yago else None
