@@ -1,6 +1,7 @@
 import os
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
+from itertools import combinations as _combinations
 from dotenv import load_dotenv
 import requests
 
@@ -401,6 +402,177 @@ def all_product_stats(orders, top_n=50):
     ]
 
 
+def daily_revenue_trend(orders: list) -> list:
+    """Revenue and order count per calendar day (UTC), sorted ascending."""
+    by_day: dict = {}
+    for order in orders:
+        created = order.get("created_at", "")
+        try:
+            dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            day = dt.strftime("%Y-%m-%d")
+            if day not in by_day:
+                by_day[day] = {"revenue": 0.0, "orders": 0}
+            by_day[day]["revenue"] += float(order.get("total_price") or 0)
+            by_day[day]["orders"] += 1
+        except (ValueError, TypeError):
+            pass
+    return [{"date": d, **v} for d, v in sorted(by_day.items())]
+
+
+def time_heatmap(orders: list) -> list:
+    """7×24 revenue matrix as list of {weekday, hour, revenue} for Plotly heatmap."""
+    WEEKDAYS = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
+    matrix: dict = {d: {h: 0.0 for h in range(24)} for d in WEEKDAYS}
+    for order in orders:
+        price = float(order.get("total_price") or 0)
+        created_at = order.get("created_at", "")
+        try:
+            dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            dt_local = dt - timedelta(hours=3)
+            matrix[WEEKDAYS[dt_local.weekday()]][dt_local.hour] += price
+        except (ValueError, TypeError):
+            pass
+    rows = []
+    for day in WEEKDAYS:
+        for hour in range(24):
+            rows.append({"weekday": day, "hour": hour, "revenue": matrix[day][hour]})
+    return rows
+
+
+def cross_sell_stats(orders: list, top_n: int = 15) -> list:
+    """Top product pairs by co-occurrence in the same order."""
+    pair_counts: dict = defaultdict(int)
+    for order in orders:
+        titles = sorted({
+            (item.get("title") or "").strip()
+            for item in order.get("line_items", [])
+            if (item.get("title") or "").strip()
+        })
+        if len(titles) >= 2:
+            for pair in _combinations(titles, 2):
+                pair_counts[pair] += 1
+    return sorted(
+        [{"produto_a": a, "produto_b": b, "pedidos_juntos": c}
+         for (a, b), c in pair_counts.items()],
+        key=lambda x: x["pedidos_juntos"],
+        reverse=True,
+    )[:top_n]
+
+
+def rfm_analysis(orders: list, period_end: datetime) -> list:
+    """RFM customer segmentation. Returns list of segment summary dicts."""
+    import pandas as pd
+    if not orders:
+        return []
+
+    ref_dt = period_end if period_end.tzinfo else period_end.replace(tzinfo=timezone.utc)
+    customer_map: dict = {}
+
+    for order in orders:
+        customer = order.get("customer") or {}
+        email = (customer.get("email") or order.get("email") or "").lower().strip()
+        if not email:
+            continue
+        price = float(order.get("total_price") or 0)
+        created = order.get("created_at", "")
+        try:
+            dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            dt = None
+
+        if email not in customer_map:
+            customer_map[email] = {"revenue": 0.0, "orders": 0, "last_order": None}
+        customer_map[email]["revenue"] += price
+        customer_map[email]["orders"] += 1
+        if dt and (customer_map[email]["last_order"] is None or dt > customer_map[email]["last_order"]):
+            customer_map[email]["last_order"] = dt
+
+    records = []
+    for email, data in customer_map.items():
+        if data["last_order"]:
+            last = data["last_order"]
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            recency = max((ref_dt - last).days, 0)
+        else:
+            recency = 999
+        records.append({"email": email, "recency": recency,
+                         "frequency": data["orders"], "monetary": data["revenue"]})
+
+    if len(records) < 5:
+        return []
+
+    df = pd.DataFrame(records)
+    try:
+        df["r_score"] = pd.qcut(df["recency"].rank(method="first", ascending=False),
+                                 5, labels=[1, 2, 3, 4, 5]).astype(int)
+        df["f_score"] = pd.qcut(df["frequency"].rank(method="first"),
+                                 5, labels=[1, 2, 3, 4, 5]).astype(int)
+        df["m_score"] = pd.qcut(df["monetary"].rank(method="first"),
+                                 5, labels=[1, 2, 3, 4, 5]).astype(int)
+    except ValueError:
+        return []
+
+    df["rfm"] = df["r_score"] + df["f_score"] + df["m_score"]
+
+    def _seg(row):
+        r, f, rfm = int(row["r_score"]), int(row["f_score"]), int(row["rfm"])
+        if rfm >= 13:              return "🏆 Campeões"
+        if rfm >= 10:              return "💛 Fiéis"
+        if r >= 4 and f <= 2:     return "🌱 Novos Promissores"
+        if r <= 2 and f >= 3:     return "⚠️ Em Risco"
+        if r <= 2 and f <= 2:     return "😴 Hibernando"
+        return                           "📈 Potencial de Crescimento"
+
+    df["segmento"] = df.apply(_seg, axis=1)
+
+    return (
+        df.groupby("segmento")
+        .agg(clientes=("email", "count"),
+             receita=("monetary", "sum"),
+             ticket_medio=("monetary", "mean"),
+             pedidos_medio=("frequency", "mean"),
+             recencia_media=("recency", "mean"))
+        .reset_index()
+        .sort_values("receita", ascending=False)
+        .to_dict("records")
+    )
+
+
+def repurchase_velocity(orders: list) -> dict:
+    """Avg and median days between 1st and 2nd order for repeat customers in the period."""
+    customer_orders: dict = defaultdict(list)
+    for order in orders:
+        customer = order.get("customer") or {}
+        email = (customer.get("email") or order.get("email") or "").lower().strip()
+        if not email:
+            continue
+        created = order.get("created_at", "")
+        try:
+            dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            customer_orders[email].append(dt)
+        except (ValueError, TypeError):
+            pass
+
+    gaps = []
+    for dates in customer_orders.values():
+        if len(dates) >= 2:
+            dates_sorted = sorted(dates)
+            gap = (dates_sorted[1] - dates_sorted[0]).days
+            if gap > 0:
+                gaps.append(gap)
+
+    if not gaps:
+        return {"avg_days": 0, "median_days": 0, "customers_with_repeat": 0}
+
+    gaps_sorted = sorted(gaps)
+    return {
+        "avg_days": round(sum(gaps) / len(gaps), 1),
+        "median_days": gaps_sorted[len(gaps) // 2],
+        "customers_with_repeat": len(gaps),
+    }
+
+
 def get_full_period_data(start_dt, end_dt):
     """Comprehensive Shopify data for the 'Visão Completa' section."""
     all_orders = fetch_orders_any_status(start_dt, end_dt)
@@ -458,6 +630,12 @@ def get_full_period_data(start_dt, end_dt):
         "coupons": coupon_stats(paid_orders),
         "by_weekday": by_weekday,
         "by_hour": by_hour,
+        # Novas análises
+        "daily_trend": daily_revenue_trend(paid_orders),
+        "heatmap": time_heatmap(paid_orders),
+        "cross_sell": cross_sell_stats(paid_orders, top_n=15),
+        "rfm": rfm_analysis(paid_orders, end_dt),
+        "repurchase_velocity": repurchase_velocity(paid_orders),
     }
 
 

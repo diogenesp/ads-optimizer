@@ -1,7 +1,9 @@
 import streamlit as st
 import plotly.graph_objects as go
+import plotly.express as px
 import pandas as pd
 from datetime import datetime, timedelta, timezone, date
+import calendar
 import os
 import anthropic
 from dotenv import load_dotenv
@@ -109,6 +111,16 @@ st.markdown("""
     .big-section-shopify { border-left-color: #a6e3a1; }
 </style>
 """, unsafe_allow_html=True)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def load_brazil_geojson():
+    import requests as _req
+    url = "https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/brazil-states.geojson"
+    try:
+        return _req.get(url, timeout=10).json()
+    except Exception:
+        return None
 
 
 def _to_dt(d: date) -> datetime:
@@ -471,7 +483,7 @@ def render_geo_tables(shopify_cur, shopify_prev, shopify_ya=None):
         st.info("Nenhum dado geográfico disponível para o período selecionado.")
 
 
-def render_shopify_full_section(full_cur, full_prev, full_ya=None):
+def render_shopify_full_section(full_cur, full_prev, full_ya=None, preset=None, cur_start=None, cur_end=None):
     st.markdown(
         '<div class="big-section" style="border-left-color: #cba6f7;">📊 Shopify — Visão Completa</div>',
         unsafe_allow_html=True,
@@ -520,6 +532,62 @@ def render_shopify_full_section(full_cur, full_prev, full_ya=None):
             delta_ya=pct(full_cur["refund_count"], _ya("refund_count")),
         )
         st.caption(f"Valor: R$ {_fmt_brl(full_cur['refund_total'])}")
+
+    # ── Tendência Diária ───────────────────────────────────────────────
+    st.markdown('<div class="section-title">Tendência Diária de Receita</div>', unsafe_allow_html=True)
+    daily = full_cur.get("daily_trend", [])
+    daily_prev = full_prev.get("daily_trend", [])
+    if daily:
+        fig_trend = go.Figure()
+        fig_trend.add_trace(go.Scatter(
+            x=[r["date"] for r in daily],
+            y=[r["revenue"] for r in daily],
+            mode="lines+markers",
+            name="Período atual",
+            line=dict(color="#89b4fa", width=2),
+            marker=dict(size=5),
+            hovertemplate="<b>%{x}</b><br>Receita: R$ %{y:,.2f}<extra></extra>",
+        ))
+        if daily_prev:
+            fig_trend.add_trace(go.Scatter(
+                x=[r["date"] for r in daily_prev],
+                y=[r["revenue"] for r in daily_prev],
+                mode="lines",
+                name="Período anterior",
+                line=dict(color="#6c7086", width=1.5, dash="dot"),
+                hovertemplate="<b>%{x}</b><br>Receita: R$ %{y:,.2f}<extra></extra>",
+            ))
+        fig_trend.update_layout(
+            paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e",
+            font=dict(color="#cdd6f4", size=12),
+            yaxis=dict(tickprefix="R$ ", gridcolor="#313244", tickformat=",.0f"),
+            xaxis=dict(gridcolor="#313244"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
+            height=300, margin=dict(l=10, r=10, t=30, b=40),
+        )
+        st.plotly_chart(fig_trend, use_container_width=True)
+
+    # ── Projeção do Mês ────────────────────────────────────────────────
+    if preset == "Este mês" and daily and cur_start and cur_end:
+        today = datetime.now(timezone.utc).date()
+        days_elapsed = (today - cur_start.date()).days + 1
+        days_in_month = calendar.monthrange(today.year, today.month)[1]
+        days_remaining = days_in_month - days_elapsed
+        if days_elapsed > 0 and days_remaining > 0:
+            daily_avg = full_cur["gross_revenue"] / days_elapsed
+            projection = full_cur["gross_revenue"] + daily_avg * days_remaining
+            st.markdown('<div class="section-title">Projeção de Fechamento do Mês</div>', unsafe_allow_html=True)
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                metric_card("Receita até hoje", full_cur["gross_revenue"],
+                            pct(full_cur["gross_revenue"], full_prev["gross_revenue"]))
+            with c2:
+                metric_card("Média diária", daily_avg, None)
+                st.caption(f"Baseado em {days_elapsed} dias")
+            with c3:
+                metric_card("Projeção de fechamento", projection,
+                            pct(projection, full_prev["gross_revenue"]))
+                st.caption(f"Faltam {days_remaining} dias no mês")
 
     # ── 2. CLIENTES ────────────────────────────────────────────────────
     st.markdown('<div class="section-title">2. Clientes</div>', unsafe_allow_html=True)
@@ -595,11 +663,107 @@ def render_shopify_full_section(full_cur, full_prev, full_ya=None):
     else:
         st.info("Nenhum dado de clientes disponível para o período.")
 
+    # ── RFM ────────────────────────────────────────────────────────────
+    st.markdown('<div class="section-title">Segmentação RFM de Clientes</div>', unsafe_allow_html=True)
+    rfm_data = full_cur.get("rfm", [])
+    if rfm_data:
+        df_rfm = pd.DataFrame(rfm_data)
+        col_rfm, col_rfm_bar = st.columns([2, 3])
+        with col_rfm:
+            st.dataframe(
+                df_rfm.rename(columns={
+                    "segmento": "Segmento", "clientes": "Clientes",
+                    "receita": "Receita (R$)", "ticket_medio": "Ticket Médio",
+                    "pedidos_medio": "Pedidos Médio", "recencia_media": "Recência Média (dias)",
+                }),
+                column_config={
+                    "Clientes": st.column_config.NumberColumn("Clientes", format="%d"),
+                    "Receita (R$)": st.column_config.NumberColumn("Receita (R$)", format="R$ %.2f"),
+                    "Ticket Médio": st.column_config.NumberColumn("Ticket Médio", format="R$ %.2f"),
+                    "Pedidos Médio": st.column_config.NumberColumn("Pedidos Médio", format="%.1f"),
+                    "Recência Média (dias)": st.column_config.NumberColumn("Recência (dias)", format="%.0f"),
+                },
+                use_container_width=True, hide_index=True,
+            )
+        with col_rfm_bar:
+            fig_rfm = go.Figure()
+            fig_rfm.add_trace(go.Bar(
+                x=df_rfm["segmento"], y=df_rfm["clientes"],
+                name="Clientes", marker_color="#89b4fa",
+                hovertemplate="<b>%{x}</b><br>Clientes: %{y}<extra></extra>",
+            ))
+            fig_rfm.add_trace(go.Bar(
+                x=df_rfm["segmento"], y=df_rfm["receita"],
+                name="Receita (R$)", marker_color="#a6e3a1",
+                yaxis="y2",
+                hovertemplate="<b>%{x}</b><br>Receita: R$ %{y:,.2f}<extra></extra>",
+            ))
+            fig_rfm.update_layout(
+                barmode="group",
+                paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e",
+                font=dict(color="#cdd6f4", size=11),
+                yaxis=dict(title="Clientes", gridcolor="#313244"),
+                yaxis2=dict(title="Receita", overlaying="y", side="right",
+                            tickprefix="R$ ", gridcolor="#313244"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                            xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
+                height=300, margin=dict(l=10, r=10, t=30, b=80),
+                xaxis=dict(tickangle=-20),
+            )
+            st.plotly_chart(fig_rfm, use_container_width=True)
+    else:
+        st.info("Dados insuficientes para análise RFM (mínimo 5 clientes).")
+
+    # ── Velocidade de Recompra ─────────────────────────────────────────
+    st.markdown('<div class="section-title">Velocidade de Recompra</div>', unsafe_allow_html=True)
+    vel = full_cur.get("repurchase_velocity", {})
+    vel_prev = full_prev.get("repurchase_velocity", {})
+    if vel and vel.get("customers_with_repeat", 0) > 0:
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            metric_card("Clientes com Recompra", vel["customers_with_repeat"],
+                        pct(vel["customers_with_repeat"], vel_prev.get("customers_with_repeat")),
+                        prefix="", fmt=",d")
+        with c2:
+            metric_card("Média entre Pedidos", vel["avg_days"],
+                        pct(vel["avg_days"], vel_prev.get("avg_days")),
+                        prefix="", fmt=".0f", suffix=" dias", inverse=True)
+        with c3:
+            metric_card("Mediana entre Pedidos", vel["median_days"],
+                        pct(vel["median_days"], vel_prev.get("median_days")),
+                        prefix="", fmt=".0f", suffix=" dias", inverse=True)
+    else:
+        st.info("Nenhum cliente com mais de um pedido no período selecionado.")
+
     # ── 3. GEOGRÁFICO — TODOS OS PEDIDOS ───────────────────────────────
     st.markdown(
         '<div class="section-title">3. Geográfico — Todos os Pedidos Shopify</div>',
         unsafe_allow_html=True,
     )
+
+    # Mapa coroplético do Brasil
+    geojson = load_brazil_geojson()
+    if geojson and full_cur["geo_states_all"]:
+        df_map = pd.DataFrame(full_cur["geo_states_all"])
+        fig_map = px.choropleth(
+            df_map,
+            geojson=geojson,
+            locations="state_code",
+            featureidkey="properties.sigla",
+            color="revenue",
+            color_continuous_scale="Blues",
+            hover_data={"state": True, "orders": True, "revenue": True, "state_code": False},
+            labels={"revenue": "Receita (R$)", "state": "Estado", "orders": "Pedidos"},
+        )
+        fig_map.update_geos(fitbounds="locations", visible=False)
+        fig_map.update_layout(
+            paper_bgcolor="#1e1e2e",
+            font=dict(color="#cdd6f4"),
+            margin=dict(l=0, r=0, t=10, b=0),
+            height=420,
+            coloraxis_colorbar=dict(title="Receita", tickprefix="R$ ", tickformat=",.0f"),
+        )
+        st.plotly_chart(fig_map, use_container_width=True)
 
     states_prev_map = {s["state_code"]: s for s in full_prev["geo_states_all"]}
     states_ya_map = {s["state_code"]: s for s in (full_ya or {}).get("geo_states_all", [])}
@@ -702,6 +866,21 @@ def render_shopify_full_section(full_cur, full_prev, full_ya=None):
     else:
         st.info("Nenhum dado de produtos disponível para o período selecionado.")
 
+    # ── Cross-sell ─────────────────────────────────────────────────────
+    st.markdown('<div class="section-title">Produtos Comprados Juntos (Cross-sell)</div>', unsafe_allow_html=True)
+    cross = full_cur.get("cross_sell", [])
+    if cross:
+        st.dataframe(
+            pd.DataFrame(cross).rename(columns={
+                "produto_a": "Produto A", "produto_b": "Produto B",
+                "pedidos_juntos": "Pedidos Juntos",
+            }),
+            column_config={"Pedidos Juntos": st.column_config.NumberColumn("Pedidos Juntos", format="%d")},
+            use_container_width=True, hide_index=True,
+        )
+    else:
+        st.info("Nenhum pedido com múltiplos produtos no período.")
+
     # ── 5. PEDIDOS ─────────────────────────────────────────────────────
     st.markdown('<div class="section-title">5. Pedidos</div>', unsafe_allow_html=True)
 
@@ -732,39 +911,59 @@ def render_shopify_full_section(full_cur, full_prev, full_ya=None):
     st.markdown('<div class="section-title">6. Financeiro</div>', unsafe_allow_html=True)
 
     WEEKDAYS = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
-    by_weekday = full_cur["by_weekday"]
-    fig_wd = go.Figure(go.Bar(
-        x=WEEKDAYS,
-        y=[by_weekday.get(d, 0) for d in WEEKDAYS],
-        marker_color="#cba6f7",
-        hovertemplate="<b>%{x}</b><br>Receita: R$ %{y:,.2f}<extra></extra>",
-    ))
-    fig_wd.update_layout(
-        title="Receita por Dia da Semana",
-        paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e",
-        font=dict(color="#cdd6f4", size=12),
-        yaxis=dict(tickprefix="R$ ", gridcolor="#313244", tickformat=",.0f"),
-        xaxis=dict(gridcolor="#313244"),
-        height=320, margin=dict(l=10, r=10, t=40, b=40),
-    )
-    st.plotly_chart(fig_wd, use_container_width=True)
 
-    by_hour = full_cur["by_hour"]
-    fig_hr = go.Figure(go.Bar(
-        x=[f"{h:02d}h" for h in range(24)],
-        y=[by_hour.get(h, 0) for h in range(24)],
-        marker_color="#89b4fa",
-        hovertemplate="<b>%{x}</b><br>Receita: R$ %{y:,.2f}<extra></extra>",
-    ))
-    fig_hr.update_layout(
-        title="Receita por Horário do Dia (Horário de Brasília)",
-        paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e",
-        font=dict(color="#cdd6f4", size=12),
-        yaxis=dict(tickprefix="R$ ", gridcolor="#313244", tickformat=",.0f"),
-        xaxis=dict(gridcolor="#313244"),
-        height=320, margin=dict(l=10, r=10, t=40, b=40),
-    )
-    st.plotly_chart(fig_hr, use_container_width=True)
+    # Heatmap 7×24
+    heatmap_rows = full_cur.get("heatmap", [])
+    if heatmap_rows:
+        df_hm = pd.DataFrame(heatmap_rows)
+        pivot = df_hm.pivot(index="weekday", columns="hour", values="revenue").reindex(WEEKDAYS)
+        fig_hm = go.Figure(go.Heatmap(
+            z=pivot.values,
+            x=[f"{h:02d}h" for h in range(24)],
+            y=WEEKDAYS,
+            colorscale="Blues",
+            hovertemplate="<b>%{y} %{x}</b><br>Receita: R$ %{z:,.2f}<extra></extra>",
+            colorbar=dict(title="R$", tickprefix="R$ ", tickformat=",.0f"),
+        ))
+        fig_hm.update_layout(
+            title="Heatmap de Receita — Dia da Semana × Horário (Brasília)",
+            paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e",
+            font=dict(color="#cdd6f4", size=12),
+            xaxis=dict(side="bottom"),
+            height=320, margin=dict(l=10, r=10, t=40, b=40),
+        )
+        st.plotly_chart(fig_hm, use_container_width=True)
+    else:
+        # Fallback: gráficos separados
+        by_weekday = full_cur["by_weekday"]
+        fig_wd = go.Figure(go.Bar(
+            x=WEEKDAYS, y=[by_weekday.get(d, 0) for d in WEEKDAYS],
+            marker_color="#cba6f7",
+            hovertemplate="<b>%{x}</b><br>Receita: R$ %{y:,.2f}<extra></extra>",
+        ))
+        fig_wd.update_layout(
+            title="Receita por Dia da Semana",
+            paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e",
+            font=dict(color="#cdd6f4"), height=320, margin=dict(l=10, r=10, t=40, b=40),
+            yaxis=dict(tickprefix="R$ ", gridcolor="#313244", tickformat=",.0f"),
+            xaxis=dict(gridcolor="#313244"),
+        )
+        st.plotly_chart(fig_wd, use_container_width=True)
+
+        by_hour = full_cur["by_hour"]
+        fig_hr = go.Figure(go.Bar(
+            x=[f"{h:02d}h" for h in range(24)], y=[by_hour.get(h, 0) for h in range(24)],
+            marker_color="#89b4fa",
+            hovertemplate="<b>%{x}</b><br>Receita: R$ %{y:,.2f}<extra></extra>",
+        ))
+        fig_hr.update_layout(
+            title="Receita por Horário do Dia (Horário de Brasília)",
+            paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e",
+            font=dict(color="#cdd6f4"), height=320, margin=dict(l=10, r=10, t=40, b=40),
+            yaxis=dict(tickprefix="R$ ", gridcolor="#313244", tickformat=",.0f"),
+            xaxis=dict(gridcolor="#313244"),
+        )
+        st.plotly_chart(fig_hr, use_container_width=True)
 
     st.markdown('<div class="section-title">Cupons Utilizados</div>', unsafe_allow_html=True)
     coupons = full_cur.get("coupons", [])
@@ -1064,7 +1263,8 @@ def main():
     render_geo_tables(shopify_cur, shopify_prev, shopify_ya=shopify_ya)
 
     # ── Shopify — Visão Completa ──────────────────────────────────────
-    render_shopify_full_section(full_cur, full_prev, full_ya=full_ya)
+    render_shopify_full_section(full_cur, full_prev, full_ya=full_ya,
+                                preset=preset, cur_start=cur_start, cur_end=cur_end)
 
     # --- Análise Claude ---
     st.markdown('<div class="section-title">Análise e Recomendações — Claude AI</div>', unsafe_allow_html=True)
