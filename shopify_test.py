@@ -275,6 +275,62 @@ def _abandoned_cart_funnel(checkouts: list) -> dict:
     return stages
 
 
+def _checkout_contact_info(checkout: dict) -> dict:
+    """Best-effort name/email/phone for an abandoned checkout, with fallbacks."""
+    customer = checkout.get("customer") or {}
+    shipping = checkout.get("shipping_address") or {}
+    default_addr = customer.get("default_address") or {}
+
+    email = checkout.get("email") or customer.get("email") or ""
+
+    name = shipping.get("name") or ""
+    if not name:
+        first = customer.get("first_name") or ""
+        last = customer.get("last_name") or ""
+        name = f"{first} {last}".strip()
+
+    phone = (
+        checkout.get("phone")
+        or shipping.get("phone")
+        or customer.get("phone")
+        or default_addr.get("phone")
+        or ""
+    )
+
+    return {"name": name or "(sem nome)", "email": email, "phone": phone}
+
+
+def abandoned_customers_ranking(checkouts: list, top_n: int = 100) -> list:
+    """Rank customers by abandoned cart value, grouping repeat abandons by email/phone."""
+    grouped: dict = {}
+    for checkout in checkouts:
+        contact = _checkout_contact_info(checkout)
+        key = contact["email"] or contact["phone"] or checkout.get("token")
+        if key not in grouped:
+            grouped[key] = {
+                "name": contact["name"],
+                "email": contact["email"],
+                "phone": contact["phone"],
+                "count": 0,
+                "potential_revenue": 0.0,
+                "last_abandoned_at": checkout.get("created_at"),
+                "checkout_url": checkout.get("abandoned_checkout_url"),
+            }
+        entry = grouped[key]
+        entry["count"] += 1
+        entry["potential_revenue"] += float(checkout.get("total_price") or 0)
+        if (checkout.get("created_at") or "") > (entry["last_abandoned_at"] or ""):
+            entry["last_abandoned_at"] = checkout.get("created_at")
+            entry["checkout_url"] = checkout.get("abandoned_checkout_url")
+        if not entry["name"] or entry["name"] == "(sem nome)":
+            entry["name"] = contact["name"]
+        if not entry["phone"]:
+            entry["phone"] = contact["phone"]
+
+    ranked = sorted(grouped.values(), key=lambda x: x["potential_revenue"], reverse=True)
+    return ranked[:top_n]
+
+
 def _abandoned_cart_products(checkouts: list, top_n: int = 20) -> list:
     """Top products found in abandoned carts by frequency."""
     counts: dict = defaultdict(lambda: {"quantity": 0, "potential_revenue": 0.0})
@@ -295,7 +351,7 @@ def abandoned_cart_stats(checkouts: list, completed_orders: int = 0) -> dict:
         return {
             "count": 0, "potential_revenue": 0.0, "avg_cart_value": 0.0,
             "abandonment_rate": 0.0, "new_customers": 0, "returning_customers": 0,
-            "top_products": [], "funnel": _abandoned_cart_funnel([]),
+            "top_products": [], "funnel": _abandoned_cart_funnel([]), "customers": [],
         }
     total_value = sum(float(c.get("total_price") or 0) for c in checkouts)
     total_checkouts = len(checkouts) + completed_orders
@@ -309,6 +365,7 @@ def abandoned_cart_stats(checkouts: list, completed_orders: int = 0) -> dict:
         "returning_customers": len(checkouts) - new_c,
         "top_products": _abandoned_cart_products(checkouts),
         "funnel": _abandoned_cart_funnel(checkouts),
+        "customers": abandoned_customers_ranking(checkouts),
     }
 
 

@@ -1295,6 +1295,35 @@ def main():
             )
             st.caption("Quanto mais avançada a etapa (frete/pagamento), mais perto o cliente estava de finalizar a compra.")
 
+        if ab.get("customers"):
+            with st.expander(f"📋 Top {len(ab['customers'])} Clientes para Recuperação — {title}"):
+                df_cust = pd.DataFrame(ab["customers"])
+                df_cust["last_abandoned_at"] = pd.to_datetime(df_cust["last_abandoned_at"]).dt.strftime("%d/%m/%Y %H:%M")
+                st.dataframe(
+                    df_cust.rename(columns={
+                        "name": "Nome",
+                        "email": "E-mail",
+                        "phone": "Telefone",
+                        "count": "Carrinhos Abandonados",
+                        "potential_revenue": "Valor Potencial (R$)",
+                        "last_abandoned_at": "Última Tentativa",
+                        "checkout_url": "Link de Recuperação",
+                    }),
+                    column_config={
+                        "Carrinhos Abandonados": st.column_config.NumberColumn("Carrinhos Abandonados", format="%d"),
+                        "Valor Potencial (R$)": st.column_config.NumberColumn("Valor Potencial (R$)", format="R$ %.2f"),
+                        "Link de Recuperação": st.column_config.LinkColumn("Link de Recuperação", display_text="Abrir"),
+                    },
+                    use_container_width=True, hide_index=True,
+                )
+                st.download_button(
+                    "⬇️ Baixar lista (CSV)",
+                    data=df_cust.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"clientes_carrinho_abandonado_{title.lower().replace(' ', '_')}.csv",
+                    mime="text/csv",
+                    key=f"download_abandoned_{title}",
+                )
+
         if ab["top_products"]:
             st.markdown(f"**Top Produtos nos Carrinhos Abandonados — {title}**")
             df_ab = pd.DataFrame(ab["top_products"])
