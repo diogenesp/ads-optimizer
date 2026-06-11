@@ -16,7 +16,7 @@ HEADERS = {
     "Content-Type": "application/json",
 }
 
-GRAPHQL_URL = f"{STORE_URL}/admin/api/{API_VERSION}/graphql.json"
+GRAPHQL_URL = f"{STORE_URL}/admin/api/2024-10/graphql.json"  # shopifyqlQuery exige versão <=2024-10
 
 _SHOPIFYQL_MUTATION = """
 mutation shopifyqlQuery($query: String!) {
