@@ -197,7 +197,7 @@ def classify_channel(order) -> tuple:
     return "Outros", "Outros"
 
 
-def channel_stats(orders: list) -> list:
+def channel_stats(orders: list, period_start=None) -> list:
     channels: dict = {}
     total_revenue = sum(float(o.get("total_price") or 0) for o in orders)
 
@@ -212,8 +212,7 @@ def channel_stats(orders: list) -> list:
             }
         channels[canal]["revenue"] += price
         channels[canal]["orders"] += 1
-        customer = order.get("customer") or {}
-        if (customer.get("orders_count") or 1) <= 1:
+        if period_start and _is_new_in_period(order, period_start):
             channels[canal]["new_customers"] += 1
         else:
             channels[canal]["returning_customers"] += 1
@@ -319,7 +318,7 @@ def get_period_data(start_dt, end_dt):
         "google_revenue": g_revenue,
         "google_ticket": g_revenue / len(google_orders) if google_orders else 0,
         "products": product_stats(google_orders, top_n=20),
-        "channels": channel_stats(orders),
+        "channels": channel_stats(orders, period_start=start_dt),
         "geo_states": states,
         "geo_cities": cities,
     }
