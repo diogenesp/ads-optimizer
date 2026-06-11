@@ -33,6 +33,12 @@ mutation shopifyqlQuery($query: String!) {
 """
 
 
+def _write_shopifyql_debug(data: dict):
+    import json as _json
+    with open("shopifyql_debug.json", "w", encoding="utf-8") as _f:
+        _json.dump(data, _f, indent=2, ensure_ascii=False)
+
+
 def fetch_shopifyql(query: str) -> list:
     """Execute a ShopifyQL query and return rows as list of dicts. Requires Shopify Plus."""
     import json as _json
@@ -90,7 +96,8 @@ def get_channel_analytics(start_dt: datetime, end_dt: datetime) -> list | None:
             SINCE '{since}' UNTIL '{until}'
             ORDER BY sessions DESC
         """)
-    except Exception:
+    except Exception as e:
+        _write_shopifyql_debug({"error": str(e), "stage": "channel_analytics_sessions"})
         return None
 
     try:
@@ -100,7 +107,8 @@ def get_channel_analytics(start_dt: datetime, end_dt: datetime) -> list | None:
             GROUP BY referrer_source
             SINCE '{since}' UNTIL '{until}'
         """)
-    except Exception:
+    except Exception as e:
+        _write_shopifyql_debug({"error": str(e), "stage": "channel_analytics_sales"})
         sales_rows = []
 
     sales_map = {(r.get("referrer_source") or "").lower(): r for r in sales_rows}
@@ -163,7 +171,8 @@ def get_sessions_data(start_dt: datetime, end_dt: datetime) -> dict | None:
             ORDER BY sessions DESC
         """)
 
-    except Exception:
+    except Exception as e:
+        _write_shopifyql_debug({"error": str(e), "stage": "sessions_data"})
         return None
 
     funnel = funnel_rows[0] if funnel_rows else {}

@@ -1048,10 +1048,10 @@ def main():
             st.stop()
 
     # Diagnóstico ShopifyQL — mostra erro se arquivo de debug existir
-    if os.path.exists("shopifyql_debug.json") and not channels_cur:
+    if os.path.exists("shopifyql_debug.json") and (not channels_cur or not sessions_cur):
         with open("shopifyql_debug.json", encoding="utf-8") as _dbf:
             _dbg = _dbf.read()
-        with st.expander("⚠️ Diagnóstico ShopifyQL (canais sem dados)", expanded=False):
+        with st.expander("⚠️ Diagnóstico ShopifyQL — clique para ver o erro", expanded=True):
             st.code(_dbg, language="json")
 
     roas_real_cur = shopify_cur["google_revenue"] / gads_cur["cost"] if gads_cur["cost"] else 0
