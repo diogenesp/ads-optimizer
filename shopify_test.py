@@ -16,6 +16,112 @@ HEADERS = {
     "Content-Type": "application/json",
 }
 
+GRAPHQL_URL = f"{STORE_URL}/admin/api/{API_VERSION}/graphql.json"
+
+_SHOPIFYQL_MUTATION = """
+mutation shopifyqlQuery($query: String!) {
+  shopifyqlQuery(query: $query) {
+    ... on TableResponse {
+      tableData {
+        rowData
+        columns { name dataType displayName }
+      }
+    }
+    parseErrors { code message }
+  }
+}
+"""
+
+
+def fetch_shopifyql(query: str) -> list:
+    """Execute a ShopifyQL query and return rows as list of dicts. Requires Shopify Plus."""
+    response = requests.post(
+        GRAPHQL_URL,
+        headers=HEADERS,
+        json={"query": _SHOPIFYQL_MUTATION, "variables": {"query": query}},
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    result = data.get("data", {}).get("shopifyqlQuery", {})
+    parse_errors = result.get("parseErrors", [])
+    if parse_errors:
+        raise ValueError(f"ShopifyQL error: {parse_errors}")
+
+    table = result.get("tableData")
+    if not table:
+        return []
+
+    columns = [c["name"] for c in table.get("columns", [])]
+    return [dict(zip(columns, row)) for row in table.get("rowData", [])]
+
+
+def get_sessions_data(start_dt: datetime, end_dt: datetime) -> dict | None:
+    """
+    Fetch session analytics via ShopifyQL (Shopify Plus only).
+    Returns None on failure so callers can degrade gracefully.
+    """
+    since = start_dt.strftime("%Y-%m-%d")
+    until = end_dt.strftime("%Y-%m-%d")
+
+    try:
+        funnel_rows = fetch_shopifyql(f"""
+            FROM sessions
+            SHOW
+              sessions,
+              added_to_cart_sessions,
+              reached_checkout_sessions,
+              orders,
+              conversion_rate
+            SINCE '{since}' UNTIL '{until}'
+        """)
+
+        channel_rows = fetch_shopifyql(f"""
+            FROM sessions
+            SHOW
+              sessions,
+              orders,
+              conversion_rate
+            GROUP BY referrer_source
+            SINCE '{since}' UNTIL '{until}'
+            ORDER BY sessions DESC
+        """)
+
+    except Exception:
+        return None
+
+    funnel = funnel_rows[0] if funnel_rows else {}
+
+    def _int(v):
+        try:
+            return int(float(v or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _float(v):
+        try:
+            return float(v or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    channels = []
+    for row in channel_rows:
+        channels.append({
+            "source": row.get("referrer_source", "Desconhecido"),
+            "sessions": _int(row.get("sessions")),
+            "orders": _int(row.get("orders")),
+            "conversion_rate": _float(row.get("conversion_rate")) * 100,
+        })
+
+    return {
+        "sessions": _int(funnel.get("sessions")),
+        "added_to_cart": _int(funnel.get("added_to_cart_sessions")),
+        "reached_checkout": _int(funnel.get("reached_checkout_sessions")),
+        "orders": _int(funnel.get("orders")),
+        "conversion_rate": _float(funnel.get("conversion_rate")) * 100,
+        "by_channel": channels,
+    }
+
 
 def fetch_orders(start_dt, end_dt):
     orders = []
