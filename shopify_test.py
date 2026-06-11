@@ -248,20 +248,25 @@ def fetch_checkouts(start_dt, end_dt) -> list:
 
 
 def _checkout_funnel_stage(checkout: dict) -> str:
-    """Classify how far an abandoned checkout progressed before being abandoned."""
-    if checkout.get("gateway"):
-        return "payment"
-    if checkout.get("shipping_lines"):
-        return "shipping"
+    """Classify how far an abandoned checkout progressed before being abandoned.
+
+    Shopify's REST `gateway` field is only set once a checkout converts to an
+    order, so it can't be used to detect "reached payment" for abandoned
+    checkouts. Instead, use whether the shipping address has real contact
+    info (name/phone/address) filled in — that only happens once the
+    customer fills the checkout form, vs. an empty/geo-detected address.
+    """
+    address = checkout.get("shipping_address") or {}
+    if address.get("address1") or address.get("phone") or address.get("first_name"):
+        return "checkout"
     return "cart"
 
 
 def _abandoned_cart_funnel(checkouts: list) -> dict:
     """Count and potential revenue of abandoned checkouts grouped by funnel stage."""
     stages = {
-        "cart": {"label": "Carrinho (sem dados de envio/pagamento)", "count": 0, "potential_revenue": 0.0},
-        "shipping": {"label": "Frete selecionado (não pagou)", "count": 0, "potential_revenue": 0.0},
-        "payment": {"label": "Pagamento iniciado (não concluiu)", "count": 0, "potential_revenue": 0.0},
+        "cart": {"label": "Carrinho (não preencheu dados de entrega)", "count": 0, "potential_revenue": 0.0},
+        "checkout": {"label": "Checkout iniciado (preencheu dados, não pagou)", "count": 0, "potential_revenue": 0.0},
     }
     for checkout in checkouts:
         stage = _checkout_funnel_stage(checkout)
