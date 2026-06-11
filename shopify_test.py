@@ -252,6 +252,8 @@ def classify_channel(order) -> tuple:
         return "Google Ads", "Pago"
     if source in ("facebook", "instagram"):
         return "Meta Ads", "Social"
+    if source == "comercial":
+        return "Comercial", "Comercial"
 
     # referring_site-based (web orders)
     if "google" in referring:
