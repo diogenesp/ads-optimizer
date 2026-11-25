@@ -1236,19 +1236,6 @@ def main():
     # ── Shopify — Performance de E-commerce ──────────────────────────
     st.markdown('<div class="big-section big-section-shopify">🛍️ Shopify — Performance de E-commerce</div>', unsafe_allow_html=True)
 
-    # --- Canais de Vendas ---
-    st.markdown('<div class="section-title">Canais de Vendas — Shopify (Todos os Pedidos)</div>', unsafe_allow_html=True)
-    st.info(
-        "Atribuição baseada em sinais de origem do pedido (referring_site e source_name). "
-        "Os números podem divergir do painel de Atribuição da Shopify, que utiliza dados de sessão completos. "
-        "Para análise oficial de canais, consulte Shopify → Análises → Atribuição."
-    )
-    render_channel_table(
-        shopify_cur.get("channels", []),
-        shopify_prev.get("channels", []),
-        channels_ya=shopify_ya.get("channels", []) if shopify_ya else None,
-    )
-
     # ── Carrinhos Abandonados ─────────────────────────────────────────
     st.markdown('<div class="section-title">🛒 Carrinhos Abandonados</div>', unsafe_allow_html=True)
 
