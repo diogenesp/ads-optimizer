@@ -242,6 +242,14 @@ def load_yago_data(ya_start_iso: str, ya_end_iso: str, cache_version: str = CACH
 
 
 @st.cache_data(ttl=43200, show_spinner=False)
+def load_monthly_shopify(cache_version: str = CACHE_VERSION):
+    """Monthly Shopify totals from Oct 2025 to current month."""
+    start = datetime(2025, 10, 1, tzinfo=timezone.utc)
+    end   = datetime.now(timezone.utc)
+    return shopify.get_monthly_shopify_data(start, end)
+
+
+@st.cache_data(ttl=43200, show_spinner=False)
 def load_monthly_gads(cache_version: str = CACHE_VERSION):
     """Monthly Google Ads totals from Oct 2025 to current month."""
     start = datetime(2025, 10, 1)
@@ -363,6 +371,91 @@ def monthly_gads_chart(monthly_data: list):
             tickformat=".1f",
             range=[0, max(roas_vals) * 1.4] if roas_vals else [0, 50],
         ),
+        xaxis=dict(tickangle=-30),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        margin=dict(l=10, r=80, t=50, b=60),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#cdd6f4"),
+        bargap=0.3,
+    )
+    return fig
+
+
+def monthly_shopify_chart(monthly_data: list):
+    """Combo chart: barras Receita, linhas Novos/Recorrentes (eixo dir), linha Ticket Médio."""
+    if not monthly_data:
+        return go.Figure()
+
+    data = sorted(monthly_data, key=lambda m: m["month"])
+    labels   = [f"{_PT_MONTHS[int(m['month'][5:7]) - 1]}/{m['month'][:4]}" for m in data]
+    revenues = [m["revenue"]            for m in data]
+    new_c    = [m["new_customers"]      for m in data]
+    ret_c    = [m["returning_customers"] for m in data]
+    aov      = [m["aov"]                for m in data]
+
+    fig = go.Figure()
+
+    # Barras — Receita (eixo esquerdo)
+    fig.add_trace(go.Bar(
+        name="Receita (R$)",
+        x=labels, y=revenues,
+        marker_color="#a6e3a1",
+        opacity=0.8,
+        hovertemplate="<b>%{x}</b><br>Receita: R$ %{y:,.0f}<extra></extra>",
+        yaxis="y1",
+    ))
+
+    # Linha — Novos Clientes (eixo direito)
+    fig.add_trace(go.Scatter(
+        name="Novos Clientes",
+        x=labels, y=new_c,
+        mode="lines+markers+text",
+        line=dict(color="#89b4fa", width=2.5),
+        marker=dict(size=7),
+        text=[str(v) for v in new_c],
+        textposition="top center",
+        hovertemplate="<b>%{x}</b><br>Novos: %{y}<extra></extra>",
+        yaxis="y2",
+    ))
+
+    # Linha — Clientes Recorrentes (eixo direito)
+    fig.add_trace(go.Scatter(
+        name="Recorrentes",
+        x=labels, y=ret_c,
+        mode="lines+markers+text",
+        line=dict(color="#f9e2af", width=2.5),
+        marker=dict(size=7),
+        text=[str(v) for v in ret_c],
+        textposition="top center",
+        hovertemplate="<b>%{x}</b><br>Recorrentes: %{y}<extra></extra>",
+        yaxis="y2",
+    ))
+
+    # Linha tracejada — Ticket Médio (eixo direito, escala própria via y3)
+    fig.add_trace(go.Scatter(
+        name="Ticket Médio (R$)",
+        x=labels, y=aov,
+        mode="lines+markers+text",
+        line=dict(color="#cba6f7", width=2, dash="dot"),
+        marker=dict(size=6, symbol="diamond"),
+        text=[f"R${v:,.0f}" for v in aov],
+        textposition="bottom center",
+        hovertemplate="<b>%{x}</b><br>Ticket Médio: R$ %{y:,.0f}<extra></extra>",
+        yaxis="y3",
+    ))
+
+    max_customers = max((max(new_c, default=0), max(ret_c, default=0)), default=1)
+
+    fig.update_layout(
+        height=440,
+        yaxis=dict(title="Receita (R$)", tickformat=",.0f",
+                   gridcolor="rgba(255,255,255,0.08)"),
+        yaxis2=dict(title="Clientes", overlaying="y", side="right",
+                    showgrid=False, range=[0, max_customers * 1.5]),
+        yaxis3=dict(overlaying="y", side="right", showgrid=False,
+                    showticklabels=False,
+                    range=[0, max(aov, default=1) * 3] if aov else [0, 1000]),
         xaxis=dict(tickangle=-30),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
         margin=dict(l=10, r=80, t=50, b=60),
@@ -637,6 +730,14 @@ def render_shopify_full_section(full_cur, full_prev, full_ya=None, preset=None, 
             delta_ya=pct(full_cur["refund_count"], _ya("refund_count")),
         )
         st.caption(f"Valor: R$ {_fmt_brl(full_cur['refund_total'])}")
+
+    # ── Histórico Mensal Shopify ───────────────────────────────────────
+    st.markdown('<div class="section-title">Histórico Mensal — Receita, Clientes e Ticket Médio</div>', unsafe_allow_html=True)
+    monthly_sh = load_monthly_shopify()
+    if monthly_sh:
+        st.plotly_chart(monthly_shopify_chart(monthly_sh), use_container_width=True)
+    else:
+        st.info("Dados históricos mensais não disponíveis.")
 
     # ── Tendência Diária ───────────────────────────────────────────────
     st.markdown('<div class="section-title">Tendência Diária de Receita</div>', unsafe_allow_html=True)

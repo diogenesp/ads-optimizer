@@ -845,6 +845,45 @@ def print_comparison(cur, prev):
     row("Ticket médio", cur["google_ticket"], prev["google_ticket"])
 
 
+def get_monthly_shopify_data(start_dt, end_dt) -> list:
+    """Monthly Shopify totals for trend chart (revenue, orders, new/returning customers, AOV)."""
+    from collections import defaultdict
+
+    orders = fetch_orders_any_status(start_dt, end_dt)
+    paid_fs = ("paid", "partially_refunded", "partially_paid")
+    paid = [
+        o for o in orders
+        if not o.get("cancelled_at") and o.get("financial_status") in paid_fs
+    ]
+
+    # Determine first order month per customer within the fetched window
+    customer_first_month: dict = {}
+    for o in sorted(paid, key=lambda x: x.get("created_at", "")):
+        email = ((o.get("customer") or {}).get("email") or o.get("email") or "").lower()
+        month = (o.get("created_at") or "")[:7]
+        if email and email not in customer_first_month:
+            customer_first_month[email] = month
+
+    monthly: dict = defaultdict(lambda: {
+        "revenue": 0.0, "orders": 0, "new_customers": 0, "returning_customers": 0,
+    })
+    for o in paid:
+        month = (o.get("created_at") or "")[:7]
+        email = ((o.get("customer") or {}).get("email") or o.get("email") or "").lower()
+        monthly[month]["revenue"] += float(o.get("total_price") or 0)
+        monthly[month]["orders"] += 1
+        if email and customer_first_month.get(email) == month:
+            monthly[month]["new_customers"] += 1
+        else:
+            monthly[month]["returning_customers"] += 1
+
+    result = []
+    for month_str, v in sorted(monthly.items()):
+        aov = v["revenue"] / v["orders"] if v["orders"] else 0
+        result.append({"month": month_str, "aov": aov, **v})
+    return result
+
+
 def print_products(products, prev_products):
     prev_map = {name: s for name, s in prev_products}
     col = max((len(n) for n, _ in products), default=10)
