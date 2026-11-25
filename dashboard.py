@@ -288,23 +288,29 @@ def metric_card(label, value, delta_val, prefix="R$ ", fmt=",.0f", inverse=False
     """, unsafe_allow_html=True)
 
 
+_PT_MONTHS = ["jan", "fev", "mar", "abr", "mai", "jun",
+              "jul", "ago", "set", "out", "nov", "dez"]
+
+
 def monthly_gads_chart(monthly_data: list):
-    """Horizontal grouped bar chart: ROAS, Valor de Conversão e Custo por mês."""
+    """Horizontal bar chart: Conversão e Custo por mês, com ROAS anotado."""
     if not monthly_data:
         return go.Figure()
 
-    months = [m["month"][:7] for m in monthly_data]  # "YYYY-MM"
+    # Build labels that Plotly won't mistake for dates (e.g. "out/2025")
     labels = []
-    for ym in months:
+    for m in monthly_data:
+        ym = m["month"][:7]  # "YYYY-MM"
         y, mo = int(ym[:4]), int(ym[5:7])
-        labels.append(f"{calendar.month_abbr[mo].lower()}. de\n{y}")
+        labels.append(f"{_PT_MONTHS[mo - 1]}/{y}")
 
     revenues = [m["revenue"] for m in monthly_data]
-    costs = [m["cost"] for m in monthly_data]
-    roas_vals = [m["roas"] for m in monthly_data]
+    costs    = [m["cost"]    for m in monthly_data]
+    roas_vals = [m["roas"]   for m in monthly_data]
 
     fig = go.Figure()
 
+    # Conversão — long teal bar
     fig.add_trace(go.Bar(
         name="Valor total de conversão",
         y=labels, x=revenues,
@@ -312,8 +318,10 @@ def monthly_gads_chart(monthly_data: list):
         marker_color="#00b4d8",
         text=[f"R$ {v/1000:.1f} mil" for v in revenues],
         textposition="outside",
+        cliponaxis=False,
         hovertemplate="<b>%{y}</b><br>Conversão: R$ %{x:,.0f}<extra></extra>",
     ))
+    # Custo — magenta bar
     fig.add_trace(go.Bar(
         name="Custo",
         y=labels, x=costs,
@@ -321,8 +329,10 @@ def monthly_gads_chart(monthly_data: list):
         marker_color="#e040fb",
         text=[f"R$ {v/1000:.2f} mil" for v in costs],
         textposition="outside",
+        cliponaxis=False,
         hovertemplate="<b>%{y}</b><br>Custo: R$ %{x:,.0f}<extra></extra>",
     ))
+    # ROAS — small blue bar on secondary axis so it stays visible
     fig.add_trace(go.Bar(
         name="ROAS",
         y=labels, x=roas_vals,
@@ -332,15 +342,33 @@ def monthly_gads_chart(monthly_data: list):
         textposition="inside",
         insidetextanchor="start",
         hovertemplate="<b>%{y}</b><br>ROAS: %{x:.1f}x<extra></extra>",
+        xaxis="x2",
     ))
 
     fig.update_layout(
         barmode="group",
-        height=max(400, len(monthly_data) * 55),
-        xaxis=dict(tickformat=",.0f", title="Valor (R$)"),
-        yaxis=dict(autorange="reversed"),
+        height=max(400, len(monthly_data) * 60),
+        # Primary x-axis for revenue & cost
+        xaxis=dict(
+            tickformat=",.0f",
+            title="Valor (R$)",
+            domain=[0, 0.85],
+        ),
+        # Secondary x-axis for ROAS (small scale, hidden ticks)
+        xaxis2=dict(
+            overlaying="x",
+            side="top",
+            showticklabels=False,
+            showgrid=False,
+            title="",
+            range=[0, max(roas_vals) * 4] if roas_vals else [0, 100],
+        ),
+        yaxis=dict(
+            type="category",   # force categorical — prevents date interpretation
+            autorange="reversed",
+        ),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-        margin=dict(l=0, r=120, t=40, b=20),
+        margin=dict(l=10, r=160, t=50, b=20),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#cdd6f4"),
