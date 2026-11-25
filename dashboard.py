@@ -293,85 +293,83 @@ _PT_MONTHS = ["jan", "fev", "mar", "abr", "mai", "jun",
 
 
 def monthly_gads_chart(monthly_data: list):
-    """Horizontal bar chart: Conversão e Custo por mês, com ROAS anotado."""
+    """Combo chart: barras para Conversão, linha para Custo, linha+eixo-dir para ROAS."""
     if not monthly_data:
         return go.Figure()
 
-    # Build labels that Plotly won't mistake for dates (e.g. "out/2025")
+    # Sort ascending (oldest → newest, left → right)
+    data = sorted(monthly_data, key=lambda m: m["month"])
+
     labels = []
-    for m in monthly_data:
-        ym = m["month"][:7]  # "YYYY-MM"
+    for m in data:
+        ym = m["month"][:7]
         y, mo = int(ym[:4]), int(ym[5:7])
         labels.append(f"{_PT_MONTHS[mo - 1]}/{y}")
 
-    revenues = [m["revenue"] for m in monthly_data]
-    costs    = [m["cost"]    for m in monthly_data]
-    roas_vals = [m["roas"]   for m in monthly_data]
+    revenues  = [m["revenue"] for m in data]
+    costs     = [m["cost"]    for m in data]
+    roas_vals = [m["roas"]    for m in data]
 
     fig = go.Figure()
 
-    # Conversão — long teal bar
+    # Barras — Valor de Conversão (eixo esquerdo)
     fig.add_trace(go.Bar(
-        name="Valor total de conversão",
-        y=labels, x=revenues,
-        orientation="h",
+        name="Valor de Conversão (R$)",
+        x=labels, y=revenues,
         marker_color="#00b4d8",
-        text=[f"R$ {v/1000:.1f} mil" for v in revenues],
-        textposition="outside",
-        cliponaxis=False,
-        hovertemplate="<b>%{y}</b><br>Conversão: R$ %{x:,.0f}<extra></extra>",
+        opacity=0.85,
+        hovertemplate="<b>%{x}</b><br>Conversão: R$ %{y:,.0f}<extra></extra>",
+        yaxis="y1",
     ))
-    # Custo — magenta bar
-    fig.add_trace(go.Bar(
-        name="Custo",
-        y=labels, x=costs,
-        orientation="h",
-        marker_color="#e040fb",
-        text=[f"R$ {v/1000:.2f} mil" for v in costs],
-        textposition="outside",
-        cliponaxis=False,
-        hovertemplate="<b>%{y}</b><br>Custo: R$ %{x:,.0f}<extra></extra>",
+
+    # Linha — Custo (eixo esquerdo, mesma escala)
+    fig.add_trace(go.Scatter(
+        name="Custo (R$)",
+        x=labels, y=costs,
+        mode="lines+markers+text",
+        line=dict(color="#e040fb", width=2.5),
+        marker=dict(size=7),
+        text=[f"R$ {v/1000:.1f}k" for v in costs],
+        textposition="top center",
+        hovertemplate="<b>%{x}</b><br>Custo: R$ %{y:,.0f}<extra></extra>",
+        yaxis="y1",
     ))
-    # ROAS — small blue bar on secondary axis so it stays visible
-    fig.add_trace(go.Bar(
+
+    # Linha — ROAS (eixo direito)
+    fig.add_trace(go.Scatter(
         name="ROAS",
-        y=labels, x=roas_vals,
-        orientation="h",
-        marker_color="#1565c0",
-        text=[f"{v:.1f}" for v in roas_vals],
-        textposition="inside",
-        insidetextanchor="start",
-        hovertemplate="<b>%{y}</b><br>ROAS: %{x:.1f}x<extra></extra>",
-        xaxis="x2",
+        x=labels, y=roas_vals,
+        mode="lines+markers+text",
+        line=dict(color="#f9e2af", width=2.5, dash="dot"),
+        marker=dict(size=7),
+        text=[f"{v:.1f}x" for v in roas_vals],
+        textposition="top center",
+        hovertemplate="<b>%{x}</b><br>ROAS: %{y:.1f}x<extra></extra>",
+        yaxis="y2",
     ))
 
     fig.update_layout(
-        barmode="group",
-        height=max(400, len(monthly_data) * 60),
-        # Primary x-axis for revenue & cost
-        xaxis=dict(
-            tickformat=",.0f",
-            title="Valor (R$)",
-            domain=[0, 0.85],
-        ),
-        # Secondary x-axis for ROAS (small scale, hidden ticks)
-        xaxis2=dict(
-            overlaying="x",
-            side="top",
-            showticklabels=False,
-            showgrid=False,
-            title="",
-            range=[0, max(roas_vals) * 4] if roas_vals else [0, 100],
-        ),
+        height=420,
         yaxis=dict(
-            type="category",   # force categorical — prevents date interpretation
-            autorange="reversed",
+            title="Valor (R$)",
+            tickformat=",.0f",
+            gridcolor="rgba(255,255,255,0.08)",
         ),
+        yaxis2=dict(
+            title="ROAS",
+            overlaying="y",
+            side="right",
+            showgrid=False,
+            tickformat=".1f",
+            range=[0, max(roas_vals) * 1.4] if roas_vals else [0, 50],
+        ),
+        xaxis=dict(tickangle=-30),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-        margin=dict(l=10, r=160, t=50, b=20),
+        margin=dict(l=10, r=80, t=50, b=60),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#cdd6f4"),
+        bargap=0.3,
     )
     return fig
 
