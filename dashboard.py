@@ -1233,9 +1233,6 @@ def main():
         hide_index=True,
     )
 
-    # ── Shopify — Performance de E-commerce ──────────────────────────
-    st.markdown('<div class="big-section big-section-shopify">🛍️ Shopify — Performance de E-commerce</div>', unsafe_allow_html=True)
-
     # ── Carrinhos Abandonados ─────────────────────────────────────────
     st.markdown('<div class="section-title">🛒 Carrinhos Abandonados</div>', unsafe_allow_html=True)
 
