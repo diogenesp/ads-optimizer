@@ -241,6 +241,15 @@ def load_yago_data(ya_start_iso: str, ya_end_iso: str, cache_version: str = CACH
     return shopify_ya, gads_ya, full_ya
 
 
+@st.cache_data(ttl=43200, show_spinner=False)
+def load_monthly_gads(cache_version: str = CACHE_VERSION):
+    """Monthly Google Ads totals from Oct 2025 to current month."""
+    start = datetime(2025, 10, 1)
+    end = datetime.now().replace(day=1) + timedelta(days=31)
+    end = end.replace(day=1) - timedelta(days=1)  # last day of current month
+    return gads.get_monthly_data(start, end)
+
+
 def pct(current, previous):
     if not previous:
         return None
@@ -277,6 +286,66 @@ def metric_card(label, value, delta_val, prefix="R$ ", fmt=",.0f", inverse=False
         {delta_html}{ya_html}
     </div>
     """, unsafe_allow_html=True)
+
+
+def monthly_gads_chart(monthly_data: list):
+    """Horizontal grouped bar chart: ROAS, Valor de Conversão e Custo por mês."""
+    if not monthly_data:
+        return go.Figure()
+
+    months = [m["month"][:7] for m in monthly_data]  # "YYYY-MM"
+    labels = []
+    for ym in months:
+        y, mo = int(ym[:4]), int(ym[5:7])
+        labels.append(f"{calendar.month_abbr[mo].lower()}. de\n{y}")
+
+    revenues = [m["revenue"] for m in monthly_data]
+    costs = [m["cost"] for m in monthly_data]
+    roas_vals = [m["roas"] for m in monthly_data]
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        name="Valor total de conversão",
+        y=labels, x=revenues,
+        orientation="h",
+        marker_color="#00b4d8",
+        text=[f"R$ {v/1000:.1f} mil" for v in revenues],
+        textposition="outside",
+        hovertemplate="<b>%{y}</b><br>Conversão: R$ %{x:,.0f}<extra></extra>",
+    ))
+    fig.add_trace(go.Bar(
+        name="Custo",
+        y=labels, x=costs,
+        orientation="h",
+        marker_color="#e040fb",
+        text=[f"R$ {v/1000:.2f} mil" for v in costs],
+        textposition="outside",
+        hovertemplate="<b>%{y}</b><br>Custo: R$ %{x:,.0f}<extra></extra>",
+    ))
+    fig.add_trace(go.Bar(
+        name="ROAS",
+        y=labels, x=roas_vals,
+        orientation="h",
+        marker_color="#1565c0",
+        text=[f"{v:.1f}" for v in roas_vals],
+        textposition="inside",
+        insidetextanchor="start",
+        hovertemplate="<b>%{y}</b><br>ROAS: %{x:.1f}x<extra></extra>",
+    ))
+
+    fig.update_layout(
+        barmode="group",
+        height=max(400, len(monthly_data) * 55),
+        xaxis=dict(tickformat=",.0f", title="Valor (R$)"),
+        yaxis=dict(autorange="reversed"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        margin=dict(l=0, r=120, t=40, b=20),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#cdd6f4"),
+    )
+    return fig
 
 
 def campaign_chart(gads_cur, gads_prev):
@@ -1191,6 +1260,14 @@ def main():
         metric_card("CPA", gads_cur["cpa"], pct(gads_cur["cpa"], gads_prev["cpa"]),
                     inverse=True,
                     delta_ya=pct(gads_cur["cpa"], gads_ya["cpa"]) if gads_ya else None)
+
+    # --- Histórico mensal Google Ads ---
+    st.markdown('<div class="section-title">Histórico Mensal Google Ads — ROAS, Conversão e Custo</div>', unsafe_allow_html=True)
+    monthly_data = load_monthly_gads()
+    if monthly_data:
+        st.plotly_chart(monthly_gads_chart(monthly_data), use_container_width=True)
+    else:
+        st.info("Dados históricos mensais não disponíveis.")
 
     # --- Gráfico por campanha ---
     st.markdown('<div class="section-title">Gasto vs Receita por Campanha</div>', unsafe_allow_html=True)

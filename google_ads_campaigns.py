@@ -92,6 +92,44 @@ def get_period_data(start_date, end_date):
     }
 
 
+def get_monthly_data(start_date, end_date):
+    """Account-level totals grouped by month, for historical trend charts."""
+    client = get_client()
+    service = client.get_service("GoogleAdsService")
+    query = f"""
+        SELECT
+            segments.month,
+            metrics.cost_micros,
+            metrics.conversions_value
+        FROM campaign
+        WHERE segments.date BETWEEN '{start_date.strftime('%Y-%m-%d')}' AND '{end_date.strftime('%Y-%m-%d')}'
+          AND campaign.status != 'REMOVED'
+        ORDER BY segments.month ASC
+    """
+    response = service.search(customer_id=CUSTOMER_ID, query=query)
+    monthly: dict = {}
+    for row in response:
+        month = row.segments.month  # "YYYY-MM-DD" (first day of month)
+        cost = micros_to_brl(row.metrics.cost_micros)
+        revenue = row.metrics.conversions_value
+        if month not in monthly:
+            monthly[month] = {"cost": 0.0, "revenue": 0.0}
+        monthly[month]["cost"] += cost
+        monthly[month]["revenue"] += revenue
+
+    result = []
+    for month_str, vals in sorted(monthly.items()):
+        cost = vals["cost"]
+        revenue = vals["revenue"]
+        result.append({
+            "month": month_str,
+            "cost": cost,
+            "revenue": revenue,
+            "roas": revenue / cost if cost > 0 else 0,
+        })
+    return result
+
+
 def pct(current, previous):
     if not previous:
         return None
