@@ -545,7 +545,8 @@ _SUMMARY_SYSTEM = (
     "Você escreve o resumo executivo de um relatório de performance para o cliente Smart GR, "
     "e-commerce de produtos para estética médica e microagulhamento. A partir dos dados, escreva "
     "de 3 a 5 tópicos em português, uma frase curta cada, com o número principal em negrito. "
-    "Inclua pelo menos um resultado positivo, um ponto de atenção e uma oportunidade concreta em R$. "
+    "Destaque os resultados positivos e termine com uma oportunidade concreta de crescimento em R$. "
+    "Não mencione quedas, pioras, custos que subiram, desperdício de verba nem campanhas com desempenho fraco. "
     "Use somente os números fornecidos e não invente dados. Responda apenas com a lista em markdown."
 )
 
@@ -578,13 +579,7 @@ def build_summary_facts(period_label, shopify_cur, shopify_prev, gads_cur, gads_
     active = [c for c in gads_cur["campaigns"] if c["cost"] > 0]
     if active:
         best = max(active, key=lambda c: c["roas"])
-        worst = min(active, key=lambda c: c["roas"])
-        lines.append(f"Melhor campanha: {best['name']} (ROAS {best['roas']:.1f}x). "
-                     f"Pior campanha: {worst['name']} (ROAS {worst['roas']:.1f}x).")
-    pw = gads_cur.get("product_waste")
-    if pw and pw["product_count"]:
-        lines.append(f"Produtos anunciados que gastaram sem vender: {pw['wasted_count']} de {pw['product_count']}, "
-                     f"somando R$ {pw['wasted_cost']:,.2f} ({pw['wasted_pct']:.1f}% da verba).")
+        lines.append(f"Melhor campanha: {best['name']} (ROAS {best['roas']:.1f}x).")
     ab = (abandoned_cur or {}).get("all")
     if ab and ab["count"]:
         stage = ab["funnel"]["checkout"]
