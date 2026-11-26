@@ -27,8 +27,6 @@ def fmt_pct(val, parens=True):
 
 
 def build_report_data(shopify_cur, shopify_prev, gads_cur, gads_prev):
-    roas_real_cur = shopify_cur["google_revenue"] / gads_cur["cost"] if gads_cur["cost"] else 0
-    roas_real_prev = shopify_prev["google_revenue"] / gads_prev["cost"] if gads_prev["cost"] else 0
 
     lines = []
     a = lines.append
@@ -50,18 +48,9 @@ def build_report_data(shopify_cur, shopify_prev, gads_cur, gads_prev):
     a(f"| Ticket médio | R$ {shopify_cur['all_ticket']:,.2f} | R$ {shopify_prev['all_ticket']:,.2f} | {fmt_pct(pct(shopify_cur['all_ticket'], shopify_prev['all_ticket']))} |")
     a("")
 
-    # --- Google Ads Shopify ---
-    a("## 2. Shopify — Atribuído ao Google Ads (Último Clique Não Direto)")
-    a(f"| Métrica | Atual | Anterior | Variação |")
-    a(f"|---|---|---|---|")
-    a(f"| Pedidos | {shopify_cur['google_orders']:,} | {shopify_prev['google_orders']:,} | {fmt_pct(pct(shopify_cur['google_orders'], shopify_prev['google_orders']))} |")
-    a(f"| Receita | R$ {shopify_cur['google_revenue']:,.2f} | R$ {shopify_prev['google_revenue']:,.2f} | {fmt_pct(pct(shopify_cur['google_revenue'], shopify_prev['google_revenue']))} |")
-    a(f"| Ticket médio | R$ {shopify_cur['google_ticket']:,.2f} | R$ {shopify_prev['google_ticket']:,.2f} | {fmt_pct(pct(shopify_cur['google_ticket'], shopify_prev['google_ticket']))} |")
-    a(f"| ROAS real (receita Shopify / gasto Google Ads) | {roas_real_cur:.2f}x | {roas_real_prev:.2f}x | {fmt_pct(pct(roas_real_cur, roas_real_prev))} |")
-    a("")
 
     # --- Google Ads totais ---
-    a("## 3. Google Ads — Métricas Totais da Conta")
+    a("## 2. Google Ads — Métricas Totais da Conta")
     a(f"| Métrica | Atual | Anterior | Variação |")
     a(f"|---|---|---|---|")
     a(f"| Gasto | R$ {gads_cur['cost']:,.2f} | R$ {gads_prev['cost']:,.2f} | {fmt_pct(pct(gads_cur['cost'], gads_prev['cost']))} |")
@@ -76,7 +65,7 @@ def build_report_data(shopify_cur, shopify_prev, gads_cur, gads_prev):
     a("")
 
     # --- Campanhas ---
-    a("## 4. Google Ads — Desempenho por Campanha")
+    a("## 3. Google Ads — Desempenho por Campanha")
     prev_camp_map = {c["name"]: c for c in gads_prev["campaigns"]}
     active = sorted(
         [c for c in gads_cur["campaigns"] if c["cost"] > 0],
@@ -103,7 +92,7 @@ def build_report_data(shopify_cur, shopify_prev, gads_cur, gads_prev):
     a("")
 
     # --- Top 20 produtos ---
-    a("## 5. Top 20 Produtos — Google Ads (Período Atual vs Anterior)")
+    a("## 4. Top 20 Produtos — Google Ads (Período Atual vs Anterior)")
     prev_prod_map = {name: s for name, s in shopify_prev["products"]}
     a(f"| # | Produto | Qtd Atual | Receita Atual | Ticket Atual | Qtd Ant | Var Qtd |")
     a(f"|---|---|---|---|---|---|---|")
@@ -123,9 +112,6 @@ Produza um relatório executivo em markdown com as seguintes seções obrigatór
 
 ## Avaliação Geral da Conta
 Compare os dois períodos. Avalie a saúde geral da conta: crescimento ou queda de receita, eficiência de gasto, tendências de CTR e CPC. Seja específico com números.
-
-## ROAS Real vs ROAS Reportado pelo Google Ads
-Explique a diferença entre o ROAS reportado pelo Google Ads (conversions_value/custo) e o ROAS real calculado pela receita do Shopify. Analise o gap e o que ele significa para a tomada de decisão.
 
 ## Análise por Campanha
 Para cada campanha ativa, indique claramente: **Escalar**, **Manter**, **Otimizar** ou **Pausar**, justificando com os dados. Use tabela se necessário.

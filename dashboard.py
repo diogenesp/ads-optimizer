@@ -565,8 +565,6 @@ def build_summary_facts(period_label, shopify_cur, shopify_prev, gads_cur, gads_
         f"ROAS {gads_cur['roas']:.1f}x ({_delta_txt(gads_cur['roas'], gads_prev['roas'])}); "
         f"CPA R$ {gads_cur['cpa']:,.2f} ({_delta_txt(gads_cur['cpa'], gads_prev['cpa'])})."
     )
-    roas_real = shopify_cur["google_revenue"] / gads_cur["cost"] if gads_cur["cost"] else 0
-    lines.append(f"Receita Shopify vinda do Google Ads: R$ {shopify_cur['google_revenue']:,.2f}; ROAS real {roas_real:.1f}x.")
     lines.append(
         f"Loja (todos os canais): receita bruta R$ {full_cur['gross_revenue']:,.2f} "
         f"({_delta_txt(full_cur['gross_revenue'], full_prev['gross_revenue'])}); "
@@ -588,8 +586,7 @@ def build_summary_facts(period_label, shopify_cur, shopify_prev, gads_cur, gads_
                      f"(R$ {stage['potential_revenue']:,.2f}).")
     profit = full_cur.get("profit")
     if profit:
-        g = profit["google"]
-        poas = g["gross_profit"] / gads_cur["cost"] if gads_cur["cost"] else 0
+        poas = gads_cur["revenue"] * profit["all"]["margin_pct"] / 100 / gads_cur["cost"] if gads_cur["cost"] else 0
         lines.append(f"Margem bruta da loja: {profit['all']['margin_pct']:.1f}%; POAS do Google Ads: {poas:.1f}x.")
     return "\n".join(lines)
 
@@ -1391,9 +1388,6 @@ def main():
             st.error(f"Erro ao carregar dados: {e}")
             st.stop()
 
-    roas_real_cur = shopify_cur["google_revenue"] / gads_cur["cost"] if gads_cur["cost"] else 0
-    roas_real_prev = shopify_prev["google_revenue"] / gads_prev["cost"] if gads_prev["cost"] else 0
-    roas_real_ya = (shopify_ya["google_revenue"] / gads_ya["cost"] if gads_ya and gads_ya["cost"] else None) if show_yago else None
 
     # ── Resumo Executivo ──────────────────────────────────────────────
     st.markdown('<div class="big-section" style="border-left-color: #f9e2af;">✨ Resumo Executivo</div>', unsafe_allow_html=True)
@@ -1436,7 +1430,6 @@ def main():
             prefix="", fmt=".2f",
             delta_ya=pct(gads_cur["roas"], gads_ya["roas"]) if gads_ya else None,
         )
-        st.caption(f"ROAS real (Shopify / GA): {roas_real_cur:.2f}x")
     with c3:
         metric_card(
             "Conversões (GA)",
@@ -1488,12 +1481,16 @@ def main():
         )
     else:
         profit_prev = full_prev.get("profit") or {}
-        p_all, p_g = profit["all"], profit["google"]
-        pp_all, pp_g = profit_prev.get("all", {}), profit_prev.get("google", {})
-        poas = p_g["gross_profit"] / gads_cur["cost"] if gads_cur["cost"] else 0
-        poas_prev = pp_g.get("gross_profit", 0) / gads_prev["cost"] if pp_g and gads_prev["cost"] else None
-        after_media = p_g["gross_profit"] - gads_cur["cost"]
-        after_media_prev = pp_g.get("gross_profit", 0) - gads_prev["cost"] if pp_g else None
+        p_all, pp_all = profit["all"], profit_prev.get("all", {})
+        gads_profit = gads_cur["revenue"] * p_all["margin_pct"] / 100
+        poas = gads_profit / gads_cur["cost"] if gads_cur["cost"] else 0
+        after_media = gads_profit - gads_cur["cost"]
+        if pp_all and gads_prev["cost"]:
+            gads_profit_prev = gads_prev["revenue"] * pp_all["margin_pct"] / 100
+            poas_prev = gads_profit_prev / gads_prev["cost"]
+            after_media_prev = gads_profit_prev - gads_prev["cost"]
+        else:
+            poas_prev = after_media_prev = None
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             metric_card("Lucro Bruto da Loja", p_all["gross_profit"],
@@ -1508,7 +1505,7 @@ def main():
         with c4:
             metric_card("POAS", poas, pct(poas, poas_prev), prefix="", fmt=".2f", suffix="x")
         st.caption(
-            "POAS = (receita do Google Ads no Shopify − custo dos produtos vendidos) ÷ investimento no Google Ads. "
+            "POAS = (receita do Google Ads × margem bruta da loja) ÷ investimento no Google Ads. "
             "Acima de 1x, cada R$ investido volta com lucro. Frete e impostos não estão descontados."
         )
         if p_all["cost_coverage_pct"] < 90:

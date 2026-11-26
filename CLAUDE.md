@@ -60,13 +60,10 @@ google_ads_campaigns.py─┘        │
 
 - **`google_ads_auth.py`** — One-time OAuth2 flow. Run with `--code=CODE` after browser authorization to save `GOOGLE_ADS_REFRESH_TOKEN` to `.env`.
 
-### Google Ads Attribution vs Shopify Attribution
+### Google Ads Revenue and Attribution
 
-The dashboard shows **two ROAS values** intentionally:
-- **ROAS (GA)** — `conversions_value / cost` as reported by Google Ads platform.
-- **ROAS Real (Shopify / GA)** — `shopify["google_revenue"] / gads["cost"]`: Shopify revenue attributed to Google Ads orders (last non-direct click, via `referring_site` / `landing_site` / `source_name` signals) divided by actual Google Ads spend.
-
-The gap between the two is analyzed by Claude in every report.
+- **All Google Ads revenue and ROAS figures come from the Google Ads platform** (`conversions_value / cost`). Do not compute Google Ads revenue from Shopify orders; the client compares against Google Ads and the Shopify Attribution report.
+- `shopify_test.is_google_ads(order)` is used only for order-level breakdowns that Google Ads can't provide (states, cities, products, abandoned carts on the "Google Ads" tabs). It counts only paid-click signals (`gclid`, `gad_source`, `utm_source=google` in `landing_site`, or `source_name == "google"`). A plain `google.com` referrer is organic search and must not count.
 
 ### Caching Strategy
 

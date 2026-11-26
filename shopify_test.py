@@ -49,19 +49,12 @@ def fetch_orders(start_dt, end_dt):
 
 
 def is_google_ads(order):
-    referring = (order.get("referring_site") or "").lower()
+    """Paid Google click signals only; a plain google.com referrer is organic search."""
     landing = (order.get("landing_site") or "").lower()
     source = (order.get("source_name") or "").lower()
-
-    if "google" in referring:
-        return True
     if any(p in landing for p in ("gclid", "gad_source", "utm_source=google")):
         return True
-    if source == "google":
-        return True
-    if source == "direct" and not referring:
-        return False
-    return False
+    return source == "google"
 
 
 def classify_channel(order) -> tuple:
