@@ -584,10 +584,6 @@ def build_summary_facts(period_label, shopify_cur, shopify_prev, gads_cur, gads_
         lines.append(f"Carrinhos abandonados: {ab['count']} (R$ {ab['potential_revenue']:,.2f}); "
                      f"{stage['count']} deles já tinham preenchido os dados de entrega "
                      f"(R$ {stage['potential_revenue']:,.2f}).")
-    profit = full_cur.get("profit")
-    if profit:
-        poas = gads_cur["revenue"] * profit["all"]["margin_pct"] / 100 / gads_cur["cost"] if gads_cur["cost"] else 0
-        lines.append(f"Margem bruta da loja: {profit['all']['margin_pct']:.1f}%; POAS do Google Ads: {poas:.1f}x.")
     return "\n".join(lines)
 
 
@@ -1469,50 +1465,6 @@ def main():
         metric_card("CPA", gads_cur["cpa"], pct(gads_cur["cpa"], gads_prev["cpa"]),
                     inverse=True,
                     delta_ya=pct(gads_cur["cpa"], gads_ya["cpa"]) if gads_ya else None)
-
-    # --- Lucro real e POAS ---
-    st.markdown('<div class="section-title">💰 Lucro Real e POAS (Lucro sobre Investimento em Anúncios)</div>', unsafe_allow_html=True)
-    profit = full_cur.get("profit")
-    if profit is None:
-        st.info(
-            "Para calcular o lucro real, o app do Shopify precisa da permissão **read_inventory** "
-            "(Shopify Admin → Configurações → Apps → app do dashboard → Configuração da API Admin) "
-            "e os produtos precisam ter o campo **Custo por item** preenchido."
-        )
-    else:
-        profit_prev = full_prev.get("profit") or {}
-        p_all, pp_all = profit["all"], profit_prev.get("all", {})
-        gads_profit = gads_cur["revenue"] * p_all["margin_pct"] / 100
-        poas = gads_profit / gads_cur["cost"] if gads_cur["cost"] else 0
-        after_media = gads_profit - gads_cur["cost"]
-        if pp_all and gads_prev["cost"]:
-            gads_profit_prev = gads_prev["revenue"] * pp_all["margin_pct"] / 100
-            poas_prev = gads_profit_prev / gads_prev["cost"]
-            after_media_prev = gads_profit_prev - gads_prev["cost"]
-        else:
-            poas_prev = after_media_prev = None
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            metric_card("Lucro Bruto da Loja", p_all["gross_profit"],
-                        pct(p_all["gross_profit"], pp_all.get("gross_profit")))
-        with c2:
-            metric_card("Margem Bruta", p_all["margin_pct"],
-                        pct(p_all["margin_pct"], pp_all.get("margin_pct")),
-                        prefix="", fmt=".1f", suffix="%")
-        with c3:
-            metric_card("Lucro Google Ads após Mídia", after_media,
-                        pct(after_media, after_media_prev))
-        with c4:
-            metric_card("POAS", poas, pct(poas, poas_prev), prefix="", fmt=".2f", suffix="x")
-        st.caption(
-            "POAS = (receita do Google Ads × margem bruta da loja) ÷ investimento no Google Ads. "
-            "Acima de 1x, cada R$ investido volta com lucro. Frete e impostos não estão descontados."
-        )
-        if p_all["cost_coverage_pct"] < 90:
-            st.warning(
-                f"Só {p_all['cost_coverage_pct']:.0f}% da receita de produtos tem custo cadastrado no Shopify; "
-                "o lucro está superestimado até o cadastro ser completado."
-            )
 
     # --- Histórico mensal Google Ads ---
     st.markdown('<div class="section-title">Histórico Mensal Google Ads — ROAS, Conversão e Custo</div>', unsafe_allow_html=True)
