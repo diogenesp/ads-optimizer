@@ -65,6 +65,53 @@ def fetch_campaigns(start_date, end_date):
     return campaigns
 
 
+def fetch_product_performance(start_date, end_date):
+    """Spend and conversions per Shopping/PMax product, aggregated across campaigns."""
+    client = get_client()
+    service = client.get_service("GoogleAdsService")
+    query = f"""
+        SELECT
+            segments.product_title,
+            segments.product_item_id,
+            metrics.cost_micros,
+            metrics.clicks,
+            metrics.conversions,
+            metrics.conversions_value
+        FROM shopping_performance_view
+        WHERE segments.date BETWEEN '{start_date.strftime('%Y-%m-%d')}' AND '{end_date.strftime('%Y-%m-%d')}'
+    """
+    products: dict = {}
+    for row in service.search(customer_id=CUSTOMER_ID, query=query):
+        key = row.segments.product_title or row.segments.product_item_id
+        p = products.setdefault(key, {"product": key, "cost": 0.0, "clicks": 0,
+                                      "conversions": 0.0, "revenue": 0.0})
+        p["cost"] += micros_to_brl(row.metrics.cost_micros)
+        p["clicks"] += row.metrics.clicks
+        p["conversions"] += row.metrics.conversions
+        p["revenue"] += row.metrics.conversions_value
+    for p in products.values():
+        p["roas"] = p["revenue"] / p["cost"] if p["cost"] > 0 else 0
+    return sorted(products.values(), key=lambda p: p["cost"], reverse=True)
+
+
+def product_waste_stats(products: list) -> dict:
+    """Products that spent budget without converting (conversions < 0.5)."""
+    total_cost = sum(p["cost"] for p in products)
+    wasted = [p for p in products if p["cost"] > 0 and p["conversions"] < 0.5]
+    winners = sorted([p for p in products if p["conversions"] >= 0.5],
+                     key=lambda p: p["revenue"], reverse=True)
+    wasted_cost = sum(p["cost"] for p in wasted)
+    return {
+        "total_cost": total_cost,
+        "wasted_cost": wasted_cost,
+        "wasted_pct": wasted_cost / total_cost * 100 if total_cost else 0,
+        "wasted_count": len(wasted),
+        "product_count": len(products),
+        "wasted": wasted,
+        "winners": winners[:20],
+    }
+
+
 def get_period_data(start_date, end_date):
     campaigns = fetch_campaigns(start_date, end_date)
     active = [c for c in campaigns if c["cost"] > 0]
@@ -89,6 +136,7 @@ def get_period_data(start_date, end_date):
         "cpa": total_cost / total_conversions if total_conversions else 0,
         "campaigns": campaigns,
         "active_campaigns": active,
+        "product_waste": product_waste_stats(fetch_product_performance(start_date, end_date)),
     }
 
 

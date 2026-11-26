@@ -740,6 +740,86 @@ def repurchase_velocity(orders: list) -> dict:
     }
 
 
+def _get_paginated(url, params, key):
+    items = []
+    while url:
+        response = requests.get(url, headers=HEADERS, params=params)
+        response.raise_for_status()
+        items.extend(response.json().get(key, []))
+        next_url = None
+        for part in response.headers.get("Link", "").split(","):
+            if 'rel="next"' in part:
+                next_url = part.split(";")[0].strip().strip("<>")
+                break
+        url, params = next_url, {}
+    return items
+
+
+def fetch_variant_costs():
+    """variant_id -> unit cost. Returns None when the app lacks the read_inventory scope."""
+    products = _get_paginated(f"{BASE_URL}/products.json",
+                              {"limit": 250, "fields": "id,variants"}, "products")
+    variant_to_item = {
+        v["id"]: v["inventory_item_id"]
+        for p in products for v in p.get("variants", []) if v.get("inventory_item_id")
+    }
+    item_ids = list(set(variant_to_item.values()))
+    item_cost = {}
+    for i in range(0, len(item_ids), 100):
+        response = requests.get(
+            f"{BASE_URL}/inventory_items.json", headers=HEADERS,
+            params={"ids": ",".join(str(x) for x in item_ids[i:i + 100]), "limit": 100},
+        )
+        if response.status_code == 403:
+            return None
+        response.raise_for_status()
+        for item in response.json().get("inventory_items", []):
+            if item.get("cost") not in (None, ""):
+                item_cost[item["id"]] = float(item["cost"])
+    return {v: item_cost[i] for v, i in variant_to_item.items() if i in item_cost}
+
+
+def profit_stats(paid_orders: list, variant_costs) -> dict | None:
+    """Product cost (COGS) and gross margin for all paid orders and Google Ads orders."""
+    if variant_costs is None:
+        return None
+
+    def order_cogs(order):
+        cogs = covered = total = 0.0
+        for item in order.get("line_items", []):
+            qty = int(item.get("quantity") or 0)
+            line_rev = float(item.get("price") or 0) * qty
+            total += line_rev
+            cost = variant_costs.get(item.get("variant_id"))
+            if cost is not None:
+                cogs += cost * qty
+                covered += line_rev
+        return cogs, covered, total
+
+    agg = {"all": [0.0, 0.0, 0.0, 0.0], "google": [0.0, 0.0, 0.0, 0.0]}
+    for order in paid_orders:
+        cogs, covered, total = order_cogs(order)
+        revenue = float(order.get("total_price") or 0)
+        buckets = ["all", "google"] if is_google_ads(order) else ["all"]
+        for b in buckets:
+            agg[b][0] += revenue
+            agg[b][1] += cogs
+            agg[b][2] += covered
+            agg[b][3] += total
+
+    def summarize(revenue, cogs, covered, total):
+        profit = revenue - cogs
+        return {
+            "revenue": revenue,
+            "cogs": cogs,
+            "gross_profit": profit,
+            "margin_pct": profit / revenue * 100 if revenue else 0,
+            "cost_coverage_pct": covered / total * 100 if total else 0,
+        }
+
+    return {k: summarize(*v) for k, v in agg.items()}
+
+
 def get_full_period_data(start_dt, end_dt):
     """Comprehensive Shopify data for the 'Visão Completa' section."""
     all_orders = fetch_orders_any_status(start_dt, end_dt)
@@ -790,6 +870,7 @@ def get_full_period_data(start_dt, end_dt):
         "avg_ticket": avg_ticket,
         "new_ticket": new_ticket,
         "ret_ticket": ret_ticket,
+        "profit": profit_stats(paid_orders, fetch_variant_costs()),
         "customer_data": customer_stats_full(paid_orders, start_dt),
         "products_all": all_product_stats(paid_orders, top_n=50),
         "geo_states_all": states,

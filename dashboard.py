@@ -541,6 +541,81 @@ def products_dataframe(shopify_cur, shopify_prev):
     return pd.DataFrame(rows)
 
 
+_SUMMARY_SYSTEM = (
+    "Você escreve o resumo executivo de um relatório de performance para o cliente Smart GR, "
+    "e-commerce de produtos para estética médica e microagulhamento. A partir dos dados, escreva "
+    "de 3 a 5 tópicos em português, uma frase curta cada, com o número principal em negrito. "
+    "Inclua pelo menos um resultado positivo, um ponto de atenção e uma oportunidade concreta em R$. "
+    "Use somente os números fornecidos e não invente dados. Responda apenas com a lista em markdown."
+)
+
+
+def _delta_txt(cur, prev):
+    v = pct(cur, prev)
+    return "sem comparação" if v is None else f"{v:+.1f}% vs período anterior"
+
+
+def build_summary_facts(period_label, shopify_cur, shopify_prev, gads_cur, gads_prev,
+                        full_cur, full_prev, abandoned_cur):
+    lines = [f"Período: {period_label}"]
+    lines.append(
+        f"Google Ads: investimento R$ {gads_cur['cost']:,.2f} ({_delta_txt(gads_cur['cost'], gads_prev['cost'])}); "
+        f"receita atribuída R$ {gads_cur['revenue']:,.2f} ({_delta_txt(gads_cur['revenue'], gads_prev['revenue'])}); "
+        f"ROAS {gads_cur['roas']:.1f}x ({_delta_txt(gads_cur['roas'], gads_prev['roas'])}); "
+        f"CPA R$ {gads_cur['cpa']:,.2f} ({_delta_txt(gads_cur['cpa'], gads_prev['cpa'])})."
+    )
+    roas_real = shopify_cur["google_revenue"] / gads_cur["cost"] if gads_cur["cost"] else 0
+    lines.append(f"Receita Shopify vinda do Google Ads: R$ {shopify_cur['google_revenue']:,.2f}; ROAS real {roas_real:.1f}x.")
+    lines.append(
+        f"Loja (todos os canais): receita bruta R$ {full_cur['gross_revenue']:,.2f} "
+        f"({_delta_txt(full_cur['gross_revenue'], full_prev['gross_revenue'])}); "
+        f"pedidos {full_cur['total_orders']} ({_delta_txt(full_cur['total_orders'], full_prev['total_orders'])}); "
+        f"ticket médio R$ {full_cur['avg_ticket']:,.2f}."
+    )
+    cd = full_cur.get("customer_data") or {}
+    if cd:
+        lines.append(f"Clientes novos: {cd.get('new_count', 0)}; recorrentes: {cd.get('returning_count', 0)}.")
+    active = [c for c in gads_cur["campaigns"] if c["cost"] > 0]
+    if active:
+        best = max(active, key=lambda c: c["roas"])
+        worst = min(active, key=lambda c: c["roas"])
+        lines.append(f"Melhor campanha: {best['name']} (ROAS {best['roas']:.1f}x). "
+                     f"Pior campanha: {worst['name']} (ROAS {worst['roas']:.1f}x).")
+    pw = gads_cur.get("product_waste")
+    if pw and pw["product_count"]:
+        lines.append(f"Produtos anunciados que gastaram sem vender: {pw['wasted_count']} de {pw['product_count']}, "
+                     f"somando R$ {pw['wasted_cost']:,.2f} ({pw['wasted_pct']:.1f}% da verba).")
+    ab = (abandoned_cur or {}).get("all")
+    if ab and ab["count"]:
+        stage = ab["funnel"]["checkout"]
+        lines.append(f"Carrinhos abandonados: {ab['count']} (R$ {ab['potential_revenue']:,.2f}); "
+                     f"{stage['count']} deles já tinham preenchido os dados de entrega "
+                     f"(R$ {stage['potential_revenue']:,.2f}).")
+    profit = full_cur.get("profit")
+    if profit:
+        g = profit["google"]
+        poas = g["gross_profit"] / gads_cur["cost"] if gads_cur["cost"] else 0
+        lines.append(f"Margem bruta da loja: {profit['all']['margin_pct']:.1f}%; POAS do Google Ads: {poas:.1f}x.")
+    return "\n".join(lines)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def generate_executive_summary(facts: str):
+    """Short Claude-written highlights; cached per unique set of facts."""
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    response = client.beta.messages.create(
+        model="claude-opus-5-5",
+        max_tokens=16000,
+        betas=["server-side-fallback-2026-07-01"],
+        extra_body={"fallbacks": "default", "output_config": {"effort": "low"}},
+        system=_SUMMARY_SYSTEM,
+        messages=[{"role": "user", "content": facts}],
+    )
+    if response.stop_reason == "refusal":
+        return None
+    return "".join(b.text for b in response.content if b.type == "text").strip() or None
+
+
 def generate_claude_analysis(shopify_cur, shopify_prev, gads_cur, gads_prev):
     import analyze
     data_report = analyze.build_report_data(shopify_cur, shopify_prev, gads_cur, gads_prev)
@@ -1325,6 +1400,25 @@ def main():
     roas_real_prev = shopify_prev["google_revenue"] / gads_prev["cost"] if gads_prev["cost"] else 0
     roas_real_ya = (shopify_ya["google_revenue"] / gads_ya["cost"] if gads_ya and gads_ya["cost"] else None) if show_yago else None
 
+    # ── Resumo Executivo ──────────────────────────────────────────────
+    st.markdown('<div class="big-section" style="border-left-color: #f9e2af;">✨ Resumo Executivo</div>', unsafe_allow_html=True)
+    if not ANTHROPIC_API_KEY:
+        st.info("Configure ANTHROPIC_API_KEY para gerar o resumo executivo.")
+    else:
+        facts = build_summary_facts(
+            _fmt_r(cur_start, cur_end), shopify_cur, shopify_prev, gads_cur, gads_prev,
+            full_cur, full_prev, abandoned_cur,
+        )
+        try:
+            with st.spinner("Escrevendo o resumo executivo…"):
+                summary = generate_executive_summary(facts)
+        except anthropic.APIError as e:
+            summary = None
+            st.caption(f"Não foi possível gerar o resumo agora ({type(e).__name__}).")
+        if summary:
+            st.markdown(summary)
+            st.caption("Gerado pelo Claude a partir dos números deste relatório.")
+
     # ── Google Ads — Performance de Mídia ────────────────────────────
     st.markdown('<div class="big-section">📣 Google Ads — Performance de Mídia</div>', unsafe_allow_html=True)
 
@@ -1388,6 +1482,46 @@ def main():
                     inverse=True,
                     delta_ya=pct(gads_cur["cpa"], gads_ya["cpa"]) if gads_ya else None)
 
+    # --- Lucro real e POAS ---
+    st.markdown('<div class="section-title">💰 Lucro Real e POAS (Lucro sobre Investimento em Anúncios)</div>', unsafe_allow_html=True)
+    profit = full_cur.get("profit")
+    if profit is None:
+        st.info(
+            "Para calcular o lucro real, o app do Shopify precisa da permissão **read_inventory** "
+            "(Shopify Admin → Configurações → Apps → app do dashboard → Configuração da API Admin) "
+            "e os produtos precisam ter o campo **Custo por item** preenchido."
+        )
+    else:
+        profit_prev = full_prev.get("profit") or {}
+        p_all, p_g = profit["all"], profit["google"]
+        pp_all, pp_g = profit_prev.get("all", {}), profit_prev.get("google", {})
+        poas = p_g["gross_profit"] / gads_cur["cost"] if gads_cur["cost"] else 0
+        poas_prev = pp_g.get("gross_profit", 0) / gads_prev["cost"] if pp_g and gads_prev["cost"] else None
+        after_media = p_g["gross_profit"] - gads_cur["cost"]
+        after_media_prev = pp_g.get("gross_profit", 0) - gads_prev["cost"] if pp_g else None
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            metric_card("Lucro Bruto da Loja", p_all["gross_profit"],
+                        pct(p_all["gross_profit"], pp_all.get("gross_profit")))
+        with c2:
+            metric_card("Margem Bruta", p_all["margin_pct"],
+                        pct(p_all["margin_pct"], pp_all.get("margin_pct")),
+                        prefix="", fmt=".1f", suffix="%")
+        with c3:
+            metric_card("Lucro Google Ads após Mídia", after_media,
+                        pct(after_media, after_media_prev))
+        with c4:
+            metric_card("POAS", poas, pct(poas, poas_prev), prefix="", fmt=".2f", suffix="x")
+        st.caption(
+            "POAS = (receita do Google Ads no Shopify − custo dos produtos vendidos) ÷ investimento no Google Ads. "
+            "Acima de 1x, cada R$ investido volta com lucro. Frete e impostos não estão descontados."
+        )
+        if p_all["cost_coverage_pct"] < 90:
+            st.warning(
+                f"Só {p_all['cost_coverage_pct']:.0f}% da receita de produtos tem custo cadastrado no Shopify; "
+                "o lucro está superestimado até o cadastro ser completado."
+            )
+
     # --- Histórico mensal Google Ads ---
     st.markdown('<div class="section-title">Histórico Mensal Google Ads — ROAS, Conversão e Custo</div>', unsafe_allow_html=True)
     monthly_data = load_monthly_gads()
@@ -1436,6 +1570,55 @@ def main():
         use_container_width=True,
         hide_index=True,
     )
+
+    # --- Produtos que gastam sem vender ---
+    st.markdown('<div class="section-title">🔍 Produtos que Gastam sem Vender — Performance Max</div>', unsafe_allow_html=True)
+    pw = gads_cur.get("product_waste")
+    if not pw or not pw["product_count"]:
+        st.info("Sem dados de desempenho por produto no período.")
+    else:
+        pw_prev = gads_prev.get("product_waste") or {}
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            metric_card("Verba sem Retorno", pw["wasted_cost"],
+                        pct(pw["wasted_cost"], pw_prev.get("wasted_cost")), inverse=True)
+        with c2:
+            metric_card("% da Verba sem Retorno", pw["wasted_pct"],
+                        pct(pw["wasted_pct"], pw_prev.get("wasted_pct")),
+                        prefix="", fmt=".1f", suffix="%", inverse=True)
+        with c3:
+            metric_card("Produtos sem Venda", pw["wasted_count"],
+                        pct(pw["wasted_count"], pw_prev.get("wasted_count")),
+                        prefix="", fmt=",d", suffix=f" de {pw['product_count']}", inverse=True)
+        st.caption(
+            "Produtos com gasto e nenhuma conversão no período. São candidatos a sair dos grupos de "
+            "recursos ou a ter preço, imagem e página revisados."
+        )
+        tab_waste, tab_win = st.tabs(["🔻 Gastando sem vender", "🏆 Produtos que mais vendem"])
+        with tab_waste:
+            df_w = pd.DataFrame(pw["wasted"][:50])[["product", "cost", "clicks"]]
+            st.dataframe(
+                df_w.rename(columns={"product": "Produto", "cost": "Gasto (R$)", "clicks": "Cliques"}),
+                column_config={
+                    "Gasto (R$)": st.column_config.NumberColumn("Gasto (R$)", format="R$ %.2f"),
+                    "Cliques": st.column_config.NumberColumn("Cliques", format="%d"),
+                },
+                use_container_width=True, hide_index=True,
+            )
+        with tab_win:
+            if pw["winners"]:
+                df_win = pd.DataFrame(pw["winners"])[["product", "cost", "revenue", "roas", "conversions"]]
+                st.dataframe(
+                    df_win.rename(columns={"product": "Produto", "cost": "Gasto (R$)", "revenue": "Receita (R$)",
+                                           "roas": "ROAS", "conversions": "Conversões"}),
+                    column_config={
+                        "Gasto (R$)": st.column_config.NumberColumn("Gasto (R$)", format="R$ %.2f"),
+                        "Receita (R$)": st.column_config.NumberColumn("Receita (R$)", format="R$ %.2f"),
+                        "ROAS": st.column_config.NumberColumn("ROAS", format="%.2fx"),
+                        "Conversões": st.column_config.NumberColumn("Conversões", format="%.1f"),
+                    },
+                    use_container_width=True, hide_index=True,
+                )
 
     # ── Carrinhos Abandonados ─────────────────────────────────────────
     st.markdown('<div class="section-title">🛒 Carrinhos Abandonados</div>', unsafe_allow_html=True)
